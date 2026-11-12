@@ -45,7 +45,7 @@ public sealed class CostingContextLoader(
     {
         var productList = await db.Products.Include(p => p.Lines).ToListAsync(ct);
         var ingredientList = await db.Ingredients.ToListAsync(ct);
-        var appSettings = await db.Settings.FirstOrDefaultAsync(ct) ?? AppSettings.CreateDefault();
+        var appSettings = await db.Settings.OrderBy(s => s.Id).FirstOrDefaultAsync(ct) ?? AppSettings.CreateDefault();
         return new CostingContext(
             productList.ToDictionary(p => p.Id),
             ingredientList.ToDictionary(i => i.Id),

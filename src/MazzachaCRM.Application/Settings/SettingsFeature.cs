@@ -14,7 +14,7 @@ public sealed class GetSettingsHandler(IReadDbContext db, IDatabaseInfo database
 {
     public async Task<SettingsDto> Handle(GetSettingsQuery query, CancellationToken ct)
     {
-        var settings = await db.Settings.FirstOrDefaultAsync(ct) ?? AppSettings.CreateDefault();
+        var settings = await db.Settings.OrderBy(s => s.Id).FirstOrDefaultAsync(ct) ?? AppSettings.CreateDefault();
         return new SettingsDto(settings.HourlyRate, settings.Currency, database.DatabasePath);
     }
 }

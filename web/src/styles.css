@@ -1,0 +1,48 @@
+body {
+  background: var(--mantine-color-gray-0);
+}
+
+/* Числа в таблицах и карточках одной ширины, чтобы разряды стояли друг под другом. */
+.tabular,
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.table-scroll th {
+  font-weight: 600;
+  line-height: 1.25;
+  vertical-align: bottom;
+  color: var(--mantine-color-gray-7);
+}
+
+.table-scroll th.num {
+  white-space: normal;
+}
+
+.table-scroll th:first-child,
+.table-scroll td.name-cell {
+  min-width: 170px;
+}
+
+.table-scroll td {
+  vertical-align: middle;
+}
+
+.total-row td {
+  font-weight: 700;
+  border-top: 2px solid var(--mantine-color-gray-4);
+  background: var(--mantine-color-gray-0);
+}
+
+.nav-link {
+  border-radius: var(--mantine-radius-md);
+}

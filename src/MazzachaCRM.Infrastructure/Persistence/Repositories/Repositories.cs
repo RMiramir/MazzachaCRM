@@ -142,7 +142,7 @@ internal sealed class SettingsRepository(AppDbContext db) : ISettingsRepository
 {
     public async Task<AppSettings> GetAsync(CancellationToken ct)
     {
-        var settings = db.Settings.Local.FirstOrDefault() ?? await db.Settings.FirstOrDefaultAsync(ct);
+        var settings = db.Settings.Local.FirstOrDefault() ?? await db.Settings.OrderBy(s => s.Id).FirstOrDefaultAsync(ct);
         if (settings is null)
         {
             settings = AppSettings.CreateDefault();

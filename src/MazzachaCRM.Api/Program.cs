@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Serialization;
 using MazzachaCRM.Api;
 using MazzachaCRM.Api.Endpoints;
@@ -64,6 +65,22 @@ api.MapFallback(() => Results.Problem(statusCode: StatusCodes.Status404NotFound,
 
 // Всё остальное отдаёт фронтенд (маршрутизация на стороне браузера).
 app.MapFallbackToFile("index.html");
+
+if (args.Contains("--open-browser"))
+{
+    app.Lifetime.ApplicationStarted.Register(() =>
+    {
+        var url = app.Urls.FirstOrDefault() ?? "http://localhost:5080";
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception exception)
+        {
+            app.Logger.LogWarning(exception, "Не удалось открыть браузер. Откройте {Url} вручную.", url);
+        }
+    });
+}
 
 app.Run();
 

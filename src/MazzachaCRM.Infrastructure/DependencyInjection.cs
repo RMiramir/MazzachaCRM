@@ -10,6 +10,7 @@ using MazzachaCRM.Domain.Settings;
 using MazzachaCRM.Infrastructure.Persistence;
 using MazzachaCRM.Infrastructure.Persistence.Repositories;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MazzachaCRM.Infrastructure;
@@ -23,14 +24,14 @@ public static class DependencyInjection
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={databasePath}"));
+        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={databasePath}", UseSplitQueries));
         return services.AddPersistence(Path.GetFullPath(databasePath));
     }
 
     /// <summary>Для тестов: база на уже открытом соединении (например, в памяти).</summary>
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, DbConnection connection)
     {
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite(connection));
+        services.AddDbContext<AppDbContext>(options => options.UseSqlite(connection, UseSplitQueries));
         return services.AddPersistence(connection.DataSource);
     }
 
@@ -53,6 +54,13 @@ public static class DependencyInjection
         services.AddScoped<DemoDataSeeder>();
         return services;
     }
+
+    /// <summary>
+    /// Партия читается сразу с продажами и списаниями. Отдельный запрос на каждую коллекцию
+    /// не даёт строкам перемножаться в одном большом соединении.
+    /// </summary>
+    private static void UseSplitQueries(SqliteDbContextOptionsBuilder sqlite) =>
+        sqlite.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
 
     private sealed record DatabaseInfo(string DatabasePath) : IDatabaseInfo;
 }
