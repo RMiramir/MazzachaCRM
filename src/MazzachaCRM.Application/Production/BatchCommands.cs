@@ -3,6 +3,7 @@ using MazzachaCRM.Application.Abstractions;
 using MazzachaCRM.Application.Common;
 using MazzachaCRM.Domain.Common;
 using MazzachaCRM.Domain.Production;
+using Microsoft.EntityFrameworkCore;
 
 namespace MazzachaCRM.Application.Production;
 
@@ -157,7 +158,7 @@ public sealed class SetBatchSalesHandler(IProductionBatchRepository batches)
     {
         var batch = await batches.GetByIdAsync(command.BatchId, ct)
             ?? throw new NotFoundException("Строка не найдена.");
-        BatchRules.EnsureNotOrderBatch(batch);
+        BatchRules.EnsureNotOrderDay(batch, command.Date);
 
         batch.SetSalesForDate(command.Date, command.Entries.Select(e => new SaleEntry(e.Quantity, e.UnitPrice)));
         return Unit.Value;
@@ -185,10 +186,52 @@ public sealed class SetBatchWriteOffHandler(IProductionBatchRepository batches)
     {
         var batch = await batches.GetByIdAsync(command.BatchId, ct)
             ?? throw new NotFoundException("Строка не найдена.");
-        BatchRules.EnsureNotOrderBatch(batch);
+        BatchRules.EnsureNotOrderDay(batch, command.Date);
 
         batch.SetWriteOffForDate(command.Date, command.Quantity, command.Reason);
         return Unit.Value;
+    }
+}
+
+// ---------- Повторить другой день ----------
+
+/// <summary>
+/// Копирует ручные строки (не заказы) из другого дня: те же изделия, количество и цена.
+/// Продажи не копируются. Возвращает число добавленных строк.
+/// </summary>
+public sealed record CopyDayCommand(DateOnly FromDate, DateOnly ToDate) : ICommand<int>;
+
+public sealed class CopyDayHandler(
+    IReadDbContext db,
+    CostingContextLoader costing,
+    BatchProductionService production)
+    : ICommandHandler<CopyDayCommand, int>
+{
+    public async Task<int> Handle(CopyDayCommand command, CancellationToken ct)
+    {
+        if (command.FromDate == command.ToDate)
+            throw new DomainException("Выберите другой день.");
+
+        var source = await db.Batches
+            .Where(b => b.ProductionDate == command.FromDate && b.OrderId == null)
+            .OrderBy(b => b.CreatedAt)
+            .ToListAsync(ct);
+        if (source.Count == 0)
+            throw new DomainException("В этот день ничего не готовили вручную, копировать нечего.");
+
+        var context = await costing.LoadTrackedAsync(ct);
+        var copied = 0;
+        foreach (var batch in source)
+        {
+            if (!context.Products.TryGetValue(batch.ProductId, out var product) || product.IsArchived)
+                continue;
+            production.Produce(context, command.ToDate, batch.ProductId, batch.Quantity, batch.UnitPrice);
+            copied++;
+        }
+
+        if (copied == 0)
+            throw new DomainException("Изделия из того дня в архиве, копировать нечего.");
+        return copied;
     }
 }
 
@@ -198,5 +241,16 @@ internal static class BatchRules
     {
         if (batch.OrderId is not null)
             throw new DomainException("Эта партия изготовлена под заказ. Меняйте её через статус заказа.");
+    }
+
+    /// <summary>
+    /// Продажа по заказу записана в день готовности и меняется только через заказ.
+    /// Остаток, который вернул магазин, в другие дни продаётся и списывается как обычно.
+    /// </summary>
+    public static void EnsureNotOrderDay(ProductionBatch batch, DateOnly date)
+    {
+        if (batch.OrderId is not null && date == batch.ProductionDate)
+            throw new DomainException(
+                "В день готовности продажа по заказу записывается автоматически. Если магазин что-то вернул, внесите отчёт магазина в заказе.");
     }
 }

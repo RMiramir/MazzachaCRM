@@ -68,6 +68,9 @@ public sealed class ProductionBatch : AggregateRoot
     /// <summary>Заказ, под который изготовлена партия. Такая партия не попадает в обычную продажу.</summary>
     public Guid? OrderId { get; private set; }
 
+    /// <summary>Позиция заказа, под которую изготовлена партия.</summary>
+    public Guid? OrderItemId { get; private set; }
+
     /// <summary>День, когда остаток стал нулевым. Пусто, пока в партии что-то осталось.</summary>
     public DateOnly? ClosedOn { get; private set; }
 
@@ -92,7 +95,8 @@ public sealed class ProductionBatch : AggregateRoot
         decimal quantity,
         CostBreakdown unitCost,
         decimal unitPrice,
-        Guid? orderId = null)
+        Guid? orderId = null,
+        Guid? orderItemId = null)
     {
         var batch = new ProductionBatch
         {
@@ -101,6 +105,7 @@ public sealed class ProductionBatch : AggregateRoot
             Quantity = Guard.Positive(quantity, "Количество"),
             UnitPrice = Guard.NotNegative(unitPrice, "Цена"),
             OrderId = orderId,
+            OrderItemId = orderItemId,
             CreatedAt = DateTime.UtcNow,
         };
         batch.UpdateCostSnapshot(unitCost);
@@ -181,7 +186,11 @@ public sealed class ProductionBatch : AggregateRoot
     }
 
     /// <summary>Отвязывает партию от заказа: изделие становится обычным остатком.</summary>
-    public void ReleaseFromOrder() => OrderId = null;
+    public void ReleaseFromOrder()
+    {
+        OrderId = null;
+        OrderItemId = null;
+    }
 
     public decimal SoldOn(DateOnly date) => _sales.Where(s => s.Date == date).Sum(s => s.Quantity);
 

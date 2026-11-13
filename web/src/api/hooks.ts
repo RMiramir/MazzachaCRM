@@ -1,6 +1,7 @@
 import { notifications } from '@mantine/notifications';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
+import type { OrderScope } from './types';
 
 /**
  * Действие, меняющее данные. После успеха все загруженные данные обновляются:
@@ -12,7 +13,7 @@ export function useAction<TArgs, TResult>(fn: (args: TArgs) => Promise<TResult>,
     mutationFn: fn,
     onSuccess: async () => {
       await queryClient.invalidateQueries();
-      if (successMessage) notifications.show({ message: successMessage, color: 'teal' });
+      if (successMessage) notifications.show({ message: successMessage, color: 'teal', autoClose: 2500 });
     },
     onError: (error: Error) => {
       notifications.show({ title: 'Не получилось', message: error.message, color: 'red', autoClose: 8000 });
@@ -43,7 +44,7 @@ export const useStockMovements = (params: { ingredientId?: string | null; from?:
 export const useCustomers = (search = '') =>
   useQuery({ queryKey: ['customers', search], queryFn: () => api.customers.list(search) });
 
-export const useOrders = (params: { activeOnly?: boolean; customerId?: string | null }, enabled = true) =>
+export const useOrders = (params: { scope?: OrderScope; customerId?: string | null }, enabled = true) =>
   useQuery({ queryKey: ['orders', params], queryFn: () => api.orders.list(params), enabled });
 
 export const usePeriodReport = (from: string | null, to: string | null) =>
@@ -54,3 +55,6 @@ export const usePeriodReport = (from: string | null, to: string | null) =>
   });
 
 export const useMargins = () => useQuery({ queryKey: ['margins'], queryFn: api.reports.margins });
+
+export const useOverview = (today: string) =>
+  useQuery({ queryKey: ['overview', today], queryFn: () => api.reports.overview(today) });

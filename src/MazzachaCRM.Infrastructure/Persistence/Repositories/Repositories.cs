@@ -122,7 +122,7 @@ internal sealed class CustomerRepository(AppDbContext db) : ICustomerRepository
 internal sealed class OrderRepository(AppDbContext db) : IOrderRepository
 {
     public Task<Order?> GetByIdAsync(Guid id, CancellationToken ct) =>
-        db.Orders.Include(x => x.Items).FirstOrDefaultAsync(x => x.Id == id, ct);
+        db.Orders.Include(x => x.Items).Include(x => x.Payments).FirstOrDefaultAsync(x => x.Id == id, ct);
 
     public async Task<int> NextNumberAsync(CancellationToken ct) =>
         (await db.Orders.MaxAsync(x => (int?)x.Number, ct) ?? 0) + 1;

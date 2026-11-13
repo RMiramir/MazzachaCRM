@@ -12,6 +12,15 @@ public enum ProductType
     SemiFinished = 2,
 }
 
+public enum CostMode
+{
+    /// <summary>Себестоимость считается по составу.</summary>
+    Recipe = 1,
+
+    /// <summary>Себестоимость за единицу указана вручную, состава нет.</summary>
+    Manual = 2,
+}
+
 /// <summary>Строка состава до сохранения: либо продукт, либо другое изделие.</summary>
 public readonly record struct RecipeLineSpec(Guid? IngredientId, Guid? ComponentProductId, decimal Quantity);
 
@@ -64,6 +73,12 @@ public sealed class Product : AggregateRoot
     public decimal SalePrice { get; private set; }
 
     public string? Note { get; private set; }
+
+    public CostMode CostMode { get; private set; } = CostMode.Recipe;
+
+    /// <summary>Себестоимость одной единицы, если она указана вручную.</summary>
+    public decimal ManualUnitCost { get; private set; }
+
     public bool IsArchived { get; private set; }
 
     public IReadOnlyCollection<RecipeLine> Lines => _lines.AsReadOnly();
@@ -76,10 +91,12 @@ public sealed class Product : AggregateRoot
         decimal laborMinutes,
         decimal salePrice,
         string? note,
-        IEnumerable<RecipeLineSpec> lines)
+        IEnumerable<RecipeLineSpec> lines,
+        CostMode costMode = CostMode.Recipe,
+        decimal manualUnitCost = 0)
     {
         var product = new Product();
-        product.Update(name, type, yieldQuantity, yieldUnit, laborMinutes, salePrice, note, lines);
+        product.Update(name, type, yieldQuantity, yieldUnit, laborMinutes, salePrice, note, lines, costMode, manualUnitCost);
         return product;
     }
 
@@ -91,7 +108,9 @@ public sealed class Product : AggregateRoot
         decimal laborMinutes,
         decimal salePrice,
         string? note,
-        IEnumerable<RecipeLineSpec> lines)
+        IEnumerable<RecipeLineSpec> lines,
+        CostMode costMode = CostMode.Recipe,
+        decimal manualUnitCost = 0)
     {
         Name = Guard.NotEmpty(name, "Название");
         Type = type;
@@ -100,6 +119,18 @@ public sealed class Product : AggregateRoot
         LaborMinutes = Guard.NotNegative(laborMinutes, "Время работы");
         SalePrice = type == ProductType.Finished ? Guard.NotNegative(salePrice, "Цена продажи") : 0;
         Note = Guard.Optional(note);
+        CostMode = costMode;
+
+        if (costMode == CostMode.Manual)
+        {
+            // Вручную указанная себестоимость уже включает всё: состав и работа не нужны.
+            ManualUnitCost = Guard.NotNegative(manualUnitCost, "Себестоимость");
+            LaborMinutes = 0;
+            _lines.Clear();
+            return;
+        }
+
+        ManualUnitCost = 0;
         SetLines(lines);
     }
 

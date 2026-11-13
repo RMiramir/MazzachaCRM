@@ -16,12 +16,16 @@ public sealed class AppSettings : AggregateRoot
 
     public string Currency { get; private set; } = "сомони";
 
+    /// <summary>Цель по прибыли на месяц. Пусто — цель не задана.</summary>
+    public decimal? MonthlyProfitGoal { get; private set; }
+
     public static AppSettings CreateDefault() => new() { Id = SingletonId };
 
-    public void Update(decimal hourlyRate, string currency)
+    public void Update(decimal hourlyRate, string currency, decimal? monthlyProfitGoal)
     {
         HourlyRate = Guard.NotNegative(hourlyRate, "Ставка за час");
         Currency = Guard.NotEmpty(currency, "Валюта");
+        MonthlyProfitGoal = monthlyProfitGoal is > 0 ? monthlyProfitGoal : null;
     }
 }
 

@@ -1,5 +1,6 @@
 import '@mantine/core/styles.css';
 import '@mantine/dates/styles.css';
+import '@mantine/charts/styles.css';
 import '@mantine/notifications/styles.css';
 import './styles.css';
 
@@ -45,7 +46,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <MantineProvider theme={theme}>
       <DatesProvider settings={{ locale: 'ru', firstDayOfWeek: 1 }}>
-        <Notifications position="top-right" />
+        <Notifications position="top-right" limit={3} />
         <QueryClientProvider client={queryClient}>
           <ConfirmProvider>
             <BrowserRouter>

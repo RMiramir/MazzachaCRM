@@ -15,6 +15,7 @@ public sealed record ProductListItemDto(
     decimal LaborMinutes,
     decimal SalePrice,
     bool IsArchived,
+    CostMode CostMode,
     CostDto? UnitCost,
     decimal? BatchCost,
     decimal? ProfitPerUnit,
@@ -40,6 +41,8 @@ public sealed record ProductDetailDto(
     decimal SalePrice,
     string? Note,
     bool IsArchived,
+    CostMode CostMode,
+    decimal ManualUnitCost,
     IReadOnlyList<RecipeLineDto> Lines,
     CostDto BatchCost,
     CostDto UnitCost);
@@ -94,6 +97,7 @@ public sealed class GetProductsHandler(CostingContextLoader costing)
             product.LaborMinutes,
             product.SalePrice.Precise(),
             product.IsArchived,
+            product.CostMode,
             unitCost is { } cost ? CostDto.From(cost) : null,
             unitCost is { } c ? (c.Total * product.YieldQuantity).Money() : null,
             isSold ? (product.SalePrice - unitCost!.Value.Total).Precise() : null,
@@ -147,6 +151,8 @@ public sealed class GetProductHandler(CostingContextLoader costing)
             product.SalePrice.Precise(),
             product.Note,
             product.IsArchived,
+            product.CostMode,
+            product.ManualUnitCost.Precise(),
             lines,
             CostDto.From(batchCost),
             CostDto.From(batchCost / product.YieldQuantity));
@@ -160,7 +166,9 @@ public sealed record PreviewProductCostQuery(
     decimal YieldQuantity,
     decimal LaborMinutes,
     decimal SalePrice,
-    IReadOnlyList<RecipeLineInput> Lines) : IQuery<CostPreviewDto>;
+    IReadOnlyList<RecipeLineInput> Lines,
+    CostMode CostMode = CostMode.Recipe,
+    decimal ManualUnitCost = 0) : IQuery<CostPreviewDto>;
 
 public sealed class PreviewProductCostHandler(CostingContextLoader costing)
     : IQueryHandler<PreviewProductCostQuery, CostPreviewDto>
@@ -181,12 +189,14 @@ public sealed class PreviewProductCostHandler(CostingContextLoader costing)
             .Select(spec => spec is { } s ? calculator.LineCost(s, query.ProductId).Total.Precise() : 0m)
             .ToList();
 
-        var batchCost = calculator.DraftBatchCost(
-            query.ProductId,
-            complete.Where(s => s is not null).Select(s => s!.Value),
-            Math.Max(query.LaborMinutes, 0));
-
         var yield = query.YieldQuantity > 0 ? query.YieldQuantity : 1;
+        var batchCost = query.CostMode == CostMode.Manual
+            ? new CostBreakdown(Math.Max(query.ManualUnitCost, 0) * yield, 0, 0)
+            : calculator.DraftBatchCost(
+                query.ProductId,
+                complete.Where(s => s is not null).Select(s => s!.Value),
+                Math.Max(query.LaborMinutes, 0));
+
         var unitCost = batchCost / yield;
 
         return new CostPreviewDto(

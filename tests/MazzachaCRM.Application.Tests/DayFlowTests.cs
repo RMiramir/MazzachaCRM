@@ -3,6 +3,7 @@ using MazzachaCRM.Application.Expenses;
 using MazzachaCRM.Application.Ingredients;
 using MazzachaCRM.Application.Production;
 using MazzachaCRM.Application.Products;
+using MazzachaCRM.Application.Reports;
 using MazzachaCRM.Application.Settings;
 using MazzachaCRM.Application.Stock;
 using MazzachaCRM.Domain.Common;
@@ -180,6 +181,81 @@ public class DayFlowTests : IAsyncLifetime
         Assert.Contains("Name", error.Errors.Keys);
         Assert.Contains("PackageSize", error.Errors.Keys);
         Assert.Contains("Размер упаковки", error.Errors["PackageSize"][0]);
+    }
+
+    [Fact]
+    public async Task Product_with_manual_cost_needs_no_recipe_and_does_not_touch_stock()
+    {
+        var candles = await _app.Send(new CreateProductCommand(
+            "Свечи для торта", ProductType.Finished, 1, MeasureUnit.Piece, 0, 5, null, [],
+            CostMode.Manual, 2.5m));
+
+        await _app.Send(new CreateBatchCommand(Monday, candles, 10, null, 4));
+
+        var day = await _app.Query(new GetDayQuery(Monday));
+        Assert.Equal(2.5m, day.Batches.Single().UnitCost);
+        Assert.Equal(25m, day.Summary.TotalCosts);
+        Assert.Equal(20m, day.Summary.Revenue);
+        Assert.Equal(5000m, await FlourStock());
+
+        // Такое изделие может входить в состав другого.
+        var cake = await _app.Send(new CreateProductCommand(
+            "Торт со свечами", ProductType.Finished, 1, MeasureUnit.Piece, 0, 30, null,
+            [new RecipeLineInput(_flour, null, 1000), new RecipeLineInput(null, candles, 2)]));
+        var product = await _app.Query(new GetProductQuery(cake));
+        Assert.Equal(15m, product.UnitCost.Total);
+    }
+
+    [Fact]
+    public async Task Recipe_product_without_lines_is_rejected()
+    {
+        await Assert.ThrowsAsync<ValidationFailedException>(() => _app.Send(new CreateProductCommand(
+            "Пустое", ProductType.Finished, 1, MeasureUnit.Piece, 0, 5, null, [])));
+    }
+
+    [Fact]
+    public async Task Copying_a_day_repeats_manual_rows_without_sales()
+    {
+        await _app.Send(new CreateBatchCommand(Monday, _muffin, 20, 3.5m, 12));
+
+        Assert.Equal(1, await _app.Send(new CopyDayCommand(Monday, Tuesday)));
+
+        var tuesday = await _app.Query(new GetDayQuery(Tuesday));
+        var row = Assert.Single(tuesday.Batches);
+        Assert.Equal(20m, row.Quantity);
+        Assert.Equal(3.5m, row.UnitPrice);
+        Assert.Equal(0m, row.Sold);
+        Assert.Equal(1000m, await FlourStock());
+    }
+
+    [Fact]
+    public async Task Cash_received_counts_showcase_sales_and_payments()
+    {
+        await _app.Send(new CreateBatchCommand(Monday, _muffin, 10, null, 4));
+
+        var day = await _app.Query(new GetDayQuery(Monday));
+        Assert.Equal(12m, day.Summary.Received);
+        Assert.Equal(0m, day.Summary.ReceivedFromOrders);
+    }
+
+    [Fact]
+    public async Task Overview_compares_periods_and_tracks_the_monthly_goal()
+    {
+        await _app.Send(new UpdateSettingsCommand(0, "сомони", 100));
+        await _app.Send(new CreateBatchCommand(Wednesday, _muffin, 10, null, 10)); // прибыль 20
+        await _app.Send(new CreateBatchCommand(Wednesday.AddDays(-7), _muffin, 10, null, 5)); // прибыль 5
+
+        var overview = await _app.Query(new GetOverviewQuery(Wednesday));
+
+        var today = overview.Periods.Single(p => p.Title == "Сегодня");
+        Assert.Equal(20m, today.Profit);
+        Assert.Equal(5m, today.PreviousProfit);
+        Assert.Equal(300m, today.ProfitChangePercent);
+        Assert.Equal(30, overview.Chart.Count);
+        Assert.Equal(Wednesday, overview.Chart[^1].Date);
+        Assert.Equal(30m, overview.Chart[^1].Revenue);
+        Assert.NotNull(overview.Goal);
+        Assert.Equal(100m, overview.Goal!.Goal);
     }
 
     [Fact]

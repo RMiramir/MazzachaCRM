@@ -12,7 +12,8 @@ public sealed record PeriodDayDto(
     decimal TotalCosts,
     decimal Revenue,
     decimal Profit,
-    decimal WriteOffLoss);
+    decimal WriteOffLoss,
+    decimal Received);
 
 public sealed record PeriodTotalsDto(
     decimal ProductionCost,
@@ -25,7 +26,8 @@ public sealed record PeriodTotalsDto(
     decimal WriteOffLoss,
     decimal UnsoldValueAtPrice,
     decimal UnsoldValueAtCost,
-    decimal PotentialProfit);
+    decimal PotentialProfit,
+    decimal Received);
 
 public sealed record PeriodProductDto(
     Guid ProductId,
@@ -66,6 +68,7 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
         public decimal Revenue;
         public decimal ProfitOnSold;
         public decimal WriteOffLoss;
+        public decimal Received;
     }
 
     private sealed class ProductTotals
@@ -91,6 +94,10 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
 
         var expenses = await db.Expenses.Where(e => e.Date >= from && e.Date <= to).ToListAsync(ct);
         var productNames = await db.Products.ToDictionaryAsync(p => p.Id, p => p.Name, ct);
+        var payments = await db.Orders
+            .SelectMany(o => o.Payments)
+            .Where(p => p.Date >= from && p.Date <= to)
+            .ToListAsync(ct);
 
         var days = new SortedDictionary<DateOnly, DayTotals>();
         var products = new Dictionary<Guid, ProductTotals>();
@@ -113,6 +120,9 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
                 var day = Day(sale.Date);
                 day.Revenue += sale.Amount;
                 day.ProfitOnSold += sale.Amount - costOfSold;
+                // Продажа заказа в день готовности — это долг клиента, деньги придут оплатой.
+                if (!(batch.OrderId != null && sale.Date == batch.ProductionDate))
+                    day.Received += sale.Amount;
                 product.Sold += sale.Quantity;
                 product.Revenue += sale.Amount;
                 product.CostOfSold += costOfSold;
@@ -128,6 +138,9 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
         foreach (var expense in expenses)
             Day(expense.Date).Expenses += expense.Amount;
 
+        foreach (var payment in payments)
+            Day(payment.Date).Received += payment.Amount;
+
         var dayRows = days
             .Select(pair =>
             {
@@ -140,7 +153,8 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
                     totalCosts.Money(),
                     d.Revenue.Money(),
                     (d.Revenue - totalCosts).Money(),
-                    d.WriteOffLoss.Money());
+                    d.WriteOffLoss.Money(),
+                    d.Received.Money());
             })
             .ToList();
 
@@ -161,7 +175,8 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
             days.Values.Sum(d => d.WriteOffLoss).Money(),
             unsoldAtPrice.Money(),
             batches.Sum(b => b.RemainingAtEndOf(to) * b.UnitCost).Money(),
-            (profit + unsoldAtPrice).Money());
+            (profit + unsoldAtPrice).Money(),
+            days.Values.Sum(d => d.Received).Money());
 
         var productRows = products
             .Where(pair => pair.Value.Made != 0 || pair.Value.Sold != 0 || pair.Value.WrittenOff != 0)

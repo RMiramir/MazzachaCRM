@@ -32,7 +32,7 @@ export const orderStatusLabel: Record<OrderStatus, string> = {
   New: 'Новый',
   InProgress: 'Готовится',
   Ready: 'Готов',
-  Completed: 'Выдан',
+  Delivered: 'Выдан',
   Cancelled: 'Отменён',
 };
 
@@ -40,7 +40,7 @@ export const orderStatusColor: Record<OrderStatus, string> = {
   New: 'blue',
   InProgress: 'orange',
   Ready: 'teal',
-  Completed: 'gray',
+  Delivered: 'gray',
   Cancelled: 'red',
 };
 

@@ -3,12 +3,15 @@
 export type MeasureUnit = 'Gram' | 'Milliliter' | 'Piece';
 export type IngredientKind = 'Ingredient' | 'Packaging';
 export type ProductType = 'Finished' | 'SemiFinished';
-export type OrderStatus = 'New' | 'InProgress' | 'Ready' | 'Completed' | 'Cancelled';
+export type OrderStatus = 'New' | 'InProgress' | 'Ready' | 'Delivered' | 'Cancelled';
+export type OrderScope = 'Active' | 'Unpaid' | 'All';
+export type CostMode = 'Recipe' | 'Manual';
 export type StockMovementType = 'Purchase' | 'Production' | 'Adjustment' | 'WriteOff';
 
 export interface Settings {
   hourlyRate: number;
   currency: string;
+  monthlyProfitGoal: number | null;
   databasePath: string;
 }
 
@@ -72,6 +75,7 @@ export interface ProductListItem {
   laborMinutes: number;
   salePrice: number;
   isArchived: boolean;
+  costMode: CostMode;
   unitCost: Cost | null;
   batchCost: number | null;
   profitPerUnit: number | null;
@@ -99,6 +103,8 @@ export interface ProductDetail {
   salePrice: number;
   note: string | null;
   isArchived: boolean;
+  costMode: CostMode;
+  manualUnitCost: number;
   lines: RecipeLine[];
   batchCost: Cost;
   unitCost: Cost;
@@ -119,6 +125,8 @@ export interface ProductInput {
   salePrice: number;
   note: string | null;
   lines: RecipeLineInput[];
+  costMode: CostMode;
+  manualUnitCost: number;
 }
 
 export interface CostPreview {
@@ -158,6 +166,8 @@ export interface DayBatch {
   breakEvenUnits: number | null;
   orderId: string | null;
   orderNumber: number | null;
+  orderIsConsignment: boolean;
+  orderReturned: number;
 }
 
 export interface DayCarryOver {
@@ -177,6 +187,7 @@ export interface DayCarryOver {
   writeOffReason: string | null;
   orderId: string | null;
   orderNumber: number | null;
+  orderIsConsignment: boolean;
 }
 
 export interface DaySummary {
@@ -192,6 +203,9 @@ export interface DaySummary {
   writeOffLoss: number;
   unsoldValueAtPrice: number;
   unsoldValueAtCost: number;
+  received: number;
+  receivedFromOrders: number;
+  debtsTotal: number;
 }
 
 export interface Expense {
@@ -201,25 +215,13 @@ export interface Expense {
   amount: number;
 }
 
-export interface DayOrder {
-  id: string;
-  number: number;
-  customerName: string;
-  customerPhone: string | null;
-  dueTime: string | null;
-  status: OrderStatus;
-  itemsSummary: string;
-  total: number;
-  balance: number;
-}
-
 export interface Day {
   date: string;
   summary: DaySummary;
   batches: DayBatch[];
   carryOver: DayCarryOver[];
   expenses: Expense[];
-  orders: DayOrder[];
+  orders: Order[];
 }
 
 export interface Customer {
@@ -227,8 +229,10 @@ export interface Customer {
   name: string;
   phone: string | null;
   note: string | null;
+  isConsignment: boolean;
   ordersCount: number;
   ordersTotal: number;
+  debt: number;
   lastOrderDate: string | null;
 }
 
@@ -236,13 +240,24 @@ export interface CustomerInput {
   name: string;
   phone: string | null;
   note: string | null;
+  isConsignment: boolean;
 }
 
 export interface OrderItem {
+  id: string;
   productId: string;
   productName: string;
   quantity: number;
+  returned: number;
+  sold: number;
   unitPrice: number;
+  amount: number;
+  note: string | null;
+}
+
+export interface OrderPayment {
+  id: string;
+  date: string;
   amount: number;
   note: string | null;
 }
@@ -253,16 +268,20 @@ export interface Order {
   customerId: string;
   customerName: string;
   customerPhone: string | null;
+  isConsignment: boolean;
   dueDate: string;
   dueTime: string | null;
   status: OrderStatus;
   total: number;
-  prepayment: number;
+  paid: number;
   balance: number;
+  isPaid: boolean;
   note: string | null;
   producedDate: string | null;
-  completedDate: string | null;
+  deliveredDate: string | null;
+  reportedDate: string | null;
   items: OrderItem[];
+  payments: OrderPayment[];
   itemsSummary: string;
   cost: number | null;
   profit: number | null;
@@ -294,6 +313,7 @@ export interface PeriodDay {
   revenue: number;
   profit: number;
   writeOffLoss: number;
+  received: number;
 }
 
 export interface PeriodTotals {
@@ -308,6 +328,7 @@ export interface PeriodTotals {
   unsoldValueAtPrice: number;
   unsoldValueAtCost: number;
   potentialProfit: number;
+  received: number;
 }
 
 export interface PeriodProduct {
@@ -341,4 +362,37 @@ export interface MarginRow {
   yieldQuantity: number;
   batchCost: number;
   breakEvenUnits: number | null;
+}
+
+export interface OverviewPeriod {
+  title: string;
+  from: string;
+  to: string;
+  revenue: number;
+  profit: number;
+  received: number;
+  previousRevenue: number;
+  previousProfit: number;
+  revenueChangePercent: number | null;
+  profitChangePercent: number | null;
+}
+
+export interface OverviewGoal {
+  goal: number;
+  achieved: number;
+  percent: number;
+  remaining: number;
+  daysLeft: number;
+  perDayNeeded: number | null;
+}
+
+export interface Overview {
+  today: string;
+  periods: OverviewPeriod[];
+  chart: PeriodDay[];
+  goal: OverviewGoal | null;
+  upcomingOrders: Order[];
+  debtsTotal: number;
+  debtorsCount: number;
+  lowStockCount: number;
 }

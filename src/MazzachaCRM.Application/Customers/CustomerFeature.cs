@@ -13,8 +13,10 @@ public sealed record CustomerDto(
     string Name,
     string? Phone,
     string? Note,
+    bool IsConsignment,
     int OrdersCount,
     decimal OrdersTotal,
+    decimal Debt,
     DateOnly? LastOrderDate);
 
 // ---------- Список ----------
@@ -29,6 +31,7 @@ public sealed class GetCustomersHandler(IReadDbContext db)
         var customers = await db.Customers.ToListAsync(ct);
         var orders = await db.Orders
             .Include(o => o.Items)
+            .Include(o => o.Payments)
             .Where(o => o.Status != OrderStatus.Cancelled)
             .ToListAsync(ct);
         var byCustomer = orders.ToLookup(o => o.CustomerId);
@@ -53,8 +56,10 @@ public sealed class GetCustomersHandler(IReadDbContext db)
                     c.Name,
                     c.Phone,
                     c.Note,
+                    c.IsConsignment,
                     own.Count,
                     own.Sum(o => o.Total).Money(),
+                    own.Where(o => o.IsProduced && o.Balance > 0).Sum(o => o.Balance).Money(),
                     own.Count == 0 ? null : own.Max(o => o.DueDate));
             })
             .ToList();
@@ -63,7 +68,7 @@ public sealed class GetCustomersHandler(IReadDbContext db)
 
 // ---------- Создание ----------
 
-public sealed record CreateCustomerCommand(string Name, string? Phone, string? Note) : ICommand<Guid>;
+public sealed record CreateCustomerCommand(string Name, string? Phone, string? Note, bool IsConsignment = false) : ICommand<Guid>;
 
 public sealed class CreateCustomerValidator : AbstractValidator<CreateCustomerCommand>
 {
@@ -79,7 +84,7 @@ public sealed class CreateCustomerHandler(ICustomerRepository customers) : IComm
 {
     public Task<Guid> Handle(CreateCustomerCommand command, CancellationToken ct)
     {
-        var customer = Customer.Create(command.Name, command.Phone, command.Note);
+        var customer = Customer.Create(command.Name, command.Phone, command.Note, command.IsConsignment);
         customers.Add(customer);
         return Task.FromResult(customer.Id);
     }
@@ -87,7 +92,7 @@ public sealed class CreateCustomerHandler(ICustomerRepository customers) : IComm
 
 // ---------- Изменение ----------
 
-public sealed record UpdateCustomerCommand(Guid Id, string Name, string? Phone, string? Note) : ICommand<Unit>;
+public sealed record UpdateCustomerCommand(Guid Id, string Name, string? Phone, string? Note, bool IsConsignment = false) : ICommand<Unit>;
 
 public sealed class UpdateCustomerValidator : AbstractValidator<UpdateCustomerCommand>
 {
@@ -105,7 +110,7 @@ public sealed class UpdateCustomerHandler(ICustomerRepository customers) : IComm
     {
         var customer = await customers.GetByIdAsync(command.Id, ct)
             ?? throw new NotFoundException("Клиент не найден.");
-        customer.Update(command.Name, command.Phone, command.Note);
+        customer.Update(command.Name, command.Phone, command.Note, command.IsConsignment);
         return Unit.Value;
     }
 }

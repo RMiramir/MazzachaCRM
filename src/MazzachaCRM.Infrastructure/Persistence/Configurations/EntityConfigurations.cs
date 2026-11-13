@@ -129,6 +129,19 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
 
         builder.HasMany(x => x.Items).WithOne().HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(x => x.Items).UsePropertyAccessMode(PropertyAccessMode.Field);
+
+        builder.HasMany(x => x.Payments).WithOne().HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(x => x.Payments).UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+
+internal sealed class OrderPaymentConfiguration : IEntityTypeConfiguration<OrderPayment>
+{
+    public void Configure(EntityTypeBuilder<OrderPayment> builder)
+    {
+        builder.ToTable("OrderPayments");
+        builder.Property(x => x.Note).HasMaxLength(300);
+        builder.HasIndex(x => x.Date);
     }
 }
 

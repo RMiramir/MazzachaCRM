@@ -12,11 +12,13 @@ export function SettingsPage() {
 
   const [hourlyRate, setHourlyRate] = useState<number | string>('');
   const [currency, setCurrency] = useState('');
+  const [goal, setGoal] = useState<number | string>('');
 
   useEffect(() => {
     if (settings) {
       setHourlyRate(settings.hourlyRate);
       setCurrency(settings.currency);
+      setGoal(settings.monthlyProfitGoal ?? '');
     }
   }, [settings]);
 
@@ -29,17 +31,20 @@ export function SettingsPage() {
     );
   }
 
-  const changed = (toNumber(hourlyRate) ?? 0) !== settings.hourlyRate || currency.trim() !== settings.currency;
+  const changed =
+    (toNumber(hourlyRate) ?? 0) !== settings.hourlyRate ||
+    currency.trim() !== settings.currency ||
+    (toNumber(goal) ?? null) !== (settings.monthlyProfitGoal ?? null);
 
   return (
     <Stack gap="md" maw={640}>
       <PageHeader title="Настройки" />
 
-      <Section title="Расчёт себестоимости">
+      <Section title="Расчёт и цели">
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            update.mutate({ hourlyRate: toNumber(hourlyRate) ?? 0, currency: currency.trim() });
+            update.mutate({ hourlyRate: toNumber(hourlyRate) ?? 0, currency: currency.trim(), monthlyProfitGoal: toNumber(goal) });
           }}
         >
           <Stack gap="sm">
@@ -48,6 +53,13 @@ export function SettingsPage() {
               description="Если указать, время работы из карточки изделия войдёт в себестоимость. Ноль — работа не учитывается."
               value={hourlyRate}
               onChange={setHourlyRate}
+              maw={260}
+            />
+            <NumberField
+              label="Цель по прибыли на месяц"
+              description="Показывается в обзоре: сколько уже заработано и сколько нужно в день, чтобы успеть. Пусто — без цели."
+              value={goal}
+              onChange={setGoal}
               maw={260}
             />
             <TextInput

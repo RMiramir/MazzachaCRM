@@ -18,6 +18,7 @@ import { DatePickerInput } from '@mantine/dates';
 import {
   IconChevronLeft,
   IconChevronRight,
+  IconCopy,
   IconDotsVertical,
   IconPlus,
   IconRefresh,
@@ -31,17 +32,15 @@ import { api } from '../api/client';
 import { useAction, useCurrency, useDay, useProducts } from '../api/hooks';
 import type { Cost, Day, DayBatch, DayCarryOver, SaleEntry } from '../api/types';
 import { InlineNumber, NumberField } from '../components/inputs';
+import { OrderCard, OrderEditor } from '../components/orders';
 import { EmptyState, Loading, PageHeader, Profit, Section, StatCard, useConfirm } from '../components/ui';
 import {
   addDays,
   isIsoDate,
   longDate,
   money,
-  orderStatusColor,
-  orderStatusLabel,
   quantity,
   shortDate,
-  shortTime,
   toNumber,
   today,
 } from '../lib/format';
@@ -69,6 +68,10 @@ export function DayPage() {
   const [writeOffTarget, setWriteOffTarget] = useState<BatchTarget | null>(null);
 
   const go = (next: string) => navigate(`/day/${next}`);
+
+  // Готовность и оплаты из будущего дня записываются сегодняшним числом.
+  const actionDate = date <= today() ? date : today();
+  const copyDay = useAction(api.days.copyFrom, 'Строки вчерашнего дня добавлены');
 
   return (
     <Stack gap="md">
@@ -99,7 +102,24 @@ export function DayPage() {
         <>
           <Summary day={day} currency={currency} />
 
-          <Section title="Приготовлено за день">
+          <DayOrders day={day} actionDate={actionDate} />
+
+          <Section
+            title="Приготовлено за день"
+            aside={
+              day.batches.every((b) => b.orderId !== null) && (
+                <Button
+                  variant="subtle"
+                  size="compact-sm"
+                  leftSection={<IconCopy size={14} />}
+                  onClick={() => copyDay.mutate({ date, fromDate: addDays(date, -1) })}
+                  loading={copyDay.isPending}
+                >
+                  Повторить вчерашнее
+                </Button>
+              )
+            }
+          >
             {day.batches.length > 0 && (
               <BatchesTable day={day} onSales={setSalesTarget} onWriteOff={setWriteOffTarget} />
             )}
@@ -119,10 +139,7 @@ export function DayPage() {
             </Section>
           )}
 
-          <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-            <ExpensesSection day={day} currency={currency} />
-            <OrdersSection day={day} />
-          </SimpleGrid>
+          <ExpensesSection day={day} currency={currency} />
         </>
       )}
 
@@ -140,23 +157,33 @@ function Summary({ day, currency }: { day: Day; currency: string }) {
     s.expenses > 0 ? `производство ${money(s.productionCost)}, общие расходы ${money(s.expenses)}` : null,
     s.laborCost > 0 ? `в том числе работа ${money(s.laborCost)}` : null,
   ].filter(Boolean);
+  const cashFromShowcase = s.received - s.receivedFromOrders;
 
   return (
     <div>
       <SimpleGrid cols={{ base: 2, md: 4 }} spacing="md">
         <StatCard label="Затраты" value={s.totalCosts} currency={currency} hint={costParts.join(' · ') || 'себестоимость приготовленного'} />
-        <StatCard label="Выручка" value={s.revenue} currency={currency} hint="всё, что продано за этот день" />
+        <StatCard label="Выручка" value={s.revenue} currency={currency} hint="продано с витрины и готовые заказы" />
         <StatCard label="Прибыль дня" value={s.profit} currency={currency} signed hint="выручка минус затраты" />
         <StatCard
-          label="Потенциальная прибыль"
-          value={s.potentialProfit}
+          label="Получено денег"
+          value={s.received}
           currency={currency}
-          signed
-          hint={`если продать всё приготовленное: выручка ${money(s.potentialRevenue)}`}
+          hint={
+            s.receivedFromOrders > 0
+              ? `оплаты заказов ${money(s.receivedFromOrders)}, витрина ${money(cashFromShowcase)}`
+              : 'продажи с витрины и оплаты заказов'
+          }
         />
       </SimpleGrid>
 
-      <Group gap="xl" mt="sm" px={4}>
+      <Group gap="xl" mt="sm" px={4} wrap="wrap">
+        <Text size="sm">
+          <Text span c="dimmed">
+            Если продать всё:{' '}
+          </Text>
+          <Profit value={s.potentialProfit} fw={600} />
+        </Text>
         <Text size="sm">
           <Text span c="dimmed">
             Прибыль с проданного:{' '}
@@ -166,14 +193,10 @@ function Summary({ day, currency }: { day: Day; currency: string }) {
         {s.unsoldValueAtPrice > 0 && (
           <Text size="sm">
             <Text span c="dimmed">
-              Не продано товара на{' '}
+              Не продано на{' '}
             </Text>
             <Text span fw={600}>
               {money(s.unsoldValueAtPrice)}
-            </Text>
-            <Text span c="dimmed">
-              {' '}
-              (по себестоимости {money(s.unsoldValueAtCost)})
             </Text>
           </Text>
         )}
@@ -187,8 +210,50 @@ function Summary({ day, currency }: { day: Day; currency: string }) {
             </Text>
           </Text>
         )}
+        {s.debtsTotal > 0 && (
+          <Anchor component={Link} to="/orders?scope=Unpaid" size="sm">
+            Вам должны:{' '}
+            <Text span fw={600} c="orange.8">
+              {money(s.debtsTotal)}
+            </Text>
+          </Anchor>
+        )}
       </Group>
     </div>
+  );
+}
+
+// ---------- Заказы на день ----------
+
+function DayOrders({ day, actionDate }: { day: Day; actionDate: string }) {
+  const [creating, setCreating] = useState(false);
+  return (
+    <Section
+      title="Заказы и поставки"
+      aside={
+        <Group gap="sm">
+          <Anchor component={Link} to="/orders" size="sm">
+            Все заказы
+          </Anchor>
+          <Button size="compact-md" leftSection={<IconPlus size={16} />} onClick={() => setCreating(true)}>
+            Новый заказ
+          </Button>
+        </Group>
+      }
+    >
+      {day.orders.length === 0 ? (
+        <Text size="sm" c="dimmed">
+          На этот день заказов нет. Заказы знакомых и поставки в магазин появляются здесь в день выдачи.
+        </Text>
+      ) : (
+        <Stack gap="xs">
+          {day.orders.map((order) => (
+            <OrderCard key={order.id} order={order} actionDate={actionDate} />
+          ))}
+        </Stack>
+      )}
+      {creating && <OrderEditor order={null} defaultDate={day.date} onClose={() => setCreating(false)} />}
+    </Section>
   );
 }
 
@@ -201,8 +266,15 @@ function costTooltip(cost: Cost) {
   return parts.join(' · ');
 }
 
-function OrderBadge({ number }: { number: number | null }) {
+function OrderBadge({ number, shop }: { number: number | null; shop?: boolean }) {
   if (number === null) return null;
+  if (shop) {
+    return (
+      <Badge size="sm" variant="light" color="grape" component={Link} to="/orders" style={{ cursor: 'pointer', flexShrink: 0 }}>
+        Магазин №{number}
+      </Badge>
+    );
+  }
   return (
     <Badge size="sm" variant="light" color="blue" component={Link} to="/orders" style={{ cursor: 'pointer', flexShrink: 0 }}>
       Заказ №{number}
@@ -244,7 +316,7 @@ function BatchesTable({
           <Table.Tr>
             <Table.Th>Изделие</Table.Th>
             <Table.Th className="num">Кол‑во</Table.Th>
-            <Table.Th className="num">С/с за шт</Table.Th>
+            <Table.Th className="num"><span style={{ whiteSpace: 'nowrap' }}>С/с</span> за шт</Table.Th>
             <Table.Th className="num">Цена за шт</Table.Th>
             <Table.Th className="num">Продано</Table.Th>
             <Table.Th className="num">Списано</Table.Th>
@@ -271,8 +343,13 @@ function BatchesTable({
                     <Text fw={500} size="sm">
                       {batch.productName}
                     </Text>
-                    <OrderBadge number={batch.orderNumber} />
+                    <OrderBadge number={batch.orderNumber} shop={batch.orderIsConsignment} />
                   </Group>
+                  {batch.orderReturned > 0 && (
+                    <Text size="xs" c="grape.7">
+                      Магазин вернул {quantity(batch.orderReturned)}
+                    </Text>
+                  )}
                   {later.length > 0 && (
                     <Text size="xs" c="dimmed">
                       Позже: {later.join(', ')}
@@ -563,7 +640,7 @@ function CarryOverTable({
           <Table.Tr>
             <Table.Th>Изделие</Table.Th>
             <Table.Th>Приготовлено</Table.Th>
-            <Table.Th className="num">С/с за шт</Table.Th>
+            <Table.Th className="num"><span style={{ whiteSpace: 'nowrap' }}>С/с</span> за шт</Table.Th>
             <Table.Th className="num">Цена за шт</Table.Th>
             <Table.Th className="num">Было утром</Table.Th>
             <Table.Th className="num">Продано сегодня</Table.Th>
@@ -575,7 +652,7 @@ function CarryOverTable({
         </Table.Thead>
         <Table.Tbody>
           {rows.map((batch) => {
-            const locked = batch.orderId !== null;
+            const locked = false;
             return (
               <Table.Tr key={batch.id}>
                 <Table.Td className="name-cell">
@@ -583,7 +660,7 @@ function CarryOverTable({
                     <Text fw={500} size="sm">
                       {batch.productName}
                     </Text>
-                    <OrderBadge number={batch.orderNumber} />
+                    <OrderBadge number={batch.orderNumber} shop={batch.orderIsConsignment} />
                   </Group>
                 </Table.Td>
                 <Table.Td>
@@ -737,50 +814,6 @@ function ExpensesSection({ day, currency }: { day: Day; currency: string }) {
           </Button>
         </Group>
       </form>
-    </Section>
-  );
-}
-
-// ---------- Заказы на этот день ----------
-
-function OrdersSection({ day }: { day: Day }) {
-  return (
-    <Section
-      title="Заказы на этот день"
-      aside={
-        <Anchor component={Link} to="/orders" size="sm">
-          Все заказы
-        </Anchor>
-      }
-    >
-      {day.orders.length === 0 ? (
-        <Text size="sm" c="dimmed">
-          На этот день заказов нет.
-        </Text>
-      ) : (
-        <Stack gap="xs">
-          {day.orders.map((order) => (
-            <Group key={order.id} justify="space-between" wrap="nowrap" align="flex-start">
-              <div>
-                <Text size="sm" fw={500}>
-                  №{order.number} · {order.customerName}
-                  {order.dueTime && ` · к ${shortTime(order.dueTime)}`}
-                </Text>
-                <Text size="sm" c="dimmed">
-                  {order.itemsSummary}
-                </Text>
-                <Text size="xs" c="dimmed">
-                  Сумма {money(order.total)}
-                  {order.balance > 0 && `, осталось оплатить ${money(order.balance)}`}
-                </Text>
-              </div>
-              <Badge color={orderStatusColor[order.status]} variant="light">
-                {orderStatusLabel[order.status]}
-              </Badge>
-            </Group>
-          ))}
-        </Stack>
-      )}
     </Section>
   );
 }

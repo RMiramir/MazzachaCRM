@@ -1,10 +1,11 @@
-import { ActionIcon, Badge, Button, Group, Menu, Modal, Stack, Table, Text, Textarea, TextInput } from '@mantine/core';
+import { ActionIcon, Badge, Button, Checkbox, Group, Menu, Modal, Stack, Table, Text, Textarea, TextInput } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import { IconDotsVertical, IconPencil, IconPlus, IconSearch, IconTrash } from '@tabler/icons-react';
 import { useState } from 'react';
 import { api } from '../api/client';
 import { useAction, useCustomers, useOrders } from '../api/hooks';
 import type { Customer } from '../api/types';
+import { ShopBadge } from '../components/orders';
 import { EmptyState, Loading, PageHeader, Section, useConfirm } from '../components/ui';
 import { money, orderStatusColor, orderStatusLabel, shortDate } from '../lib/format';
 
@@ -65,6 +66,7 @@ export function CustomersPage() {
                   <Table.Th>Заметка</Table.Th>
                   <Table.Th className="num">Заказов</Table.Th>
                   <Table.Th className="num">На сумму</Table.Th>
+                  <Table.Th className="num">Должен</Table.Th>
                   <Table.Th>Последний заказ</Table.Th>
                   <Table.Th />
                 </Table.Tr>
@@ -73,9 +75,12 @@ export function CustomersPage() {
                 {customers.map((customer) => (
                   <Table.Tr key={customer.id} style={{ cursor: 'pointer' }} onClick={() => setEditing(customer)}>
                     <Table.Td>
-                      <Text size="sm" fw={500}>
-                        {customer.name}
-                      </Text>
+                      <Group gap={6} wrap="nowrap">
+                        <Text size="sm" fw={500}>
+                          {customer.name}
+                        </Text>
+                        {customer.isConsignment && <ShopBadge />}
+                      </Group>
                     </Table.Td>
                     <Table.Td>{customer.phone}</Table.Td>
                     <Table.Td>
@@ -85,6 +90,15 @@ export function CustomersPage() {
                     </Table.Td>
                     <Table.Td className="num">{customer.ordersCount}</Table.Td>
                     <Table.Td className="num">{money(customer.ordersTotal)}</Table.Td>
+                    <Table.Td className="num">
+                      {customer.debt > 0 ? (
+                        <Text span inherit fw={600} c="orange.8">
+                          {money(customer.debt)}
+                        </Text>
+                      ) : (
+                        ''
+                      )}
+                    </Table.Td>
                     <Table.Td>{shortDate(customer.lastOrderDate)}</Table.Td>
                     <Table.Td w={40} onClick={(event) => event.stopPropagation()}>
                       <Menu position="bottom-end" withinPortal>
@@ -129,9 +143,10 @@ function CustomerForm({ customer, onClose }: { customer: Customer | null; onClos
   const [name, setName] = useState(customer?.name ?? '');
   const [phone, setPhone] = useState(customer?.phone ?? '');
   const [note, setNote] = useState(customer?.note ?? '');
+  const [isConsignment, setIsConsignment] = useState(customer?.isConsignment ?? false);
 
   const save = async () => {
-    const body = { name: name.trim(), phone: phone.trim() || null, note: note.trim() || null };
+    const body = { name: name.trim(), phone: phone.trim() || null, note: note.trim() || null, isConsignment };
     if (customer) await update.mutateAsync({ id: customer.id, ...body });
     else await create.mutateAsync(body);
     onClose();
@@ -155,6 +170,11 @@ function CustomerForm({ customer, onClose }: { customer: Customer | null; onClos
             onChange={(event) => setNote(event.currentTarget.value)}
             autosize
             minRows={2}
+          />
+          <Checkbox
+            label="Магазин: платит после продажи, может вернуть непроданное"
+            checked={isConsignment}
+            onChange={(event) => setIsConsignment(event.currentTarget.checked)}
           />
 
           {customer && orders && orders.length > 0 && (

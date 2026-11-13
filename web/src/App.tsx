@@ -4,6 +4,7 @@ import {
   IconCake,
   IconCalendarEvent,
   IconChartBar,
+  IconChartLine,
   IconClipboardList,
   IconPackages,
   IconSettings,
@@ -16,6 +17,7 @@ import { CustomersPage } from './pages/CustomersPage';
 import { DayPage } from './pages/DayPage';
 import { IngredientsPage } from './pages/IngredientsPage';
 import { OrdersPage } from './pages/OrdersPage';
+import { OverviewPage } from './pages/OverviewPage';
 import { ProductsPage } from './pages/ProductsPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -32,11 +34,12 @@ export function App() {
   const location = useLocation();
 
   // Счётчики в меню: активные заказы и продукты, которые заканчиваются.
-  const activeOrders = useOrders({ activeOnly: true }).data?.length ?? 0;
+  const activeOrders = useOrders({ scope: 'Active' }).data?.length ?? 0;
   const lowStock = useIngredients().data?.filter((i) => i.isLowStock || i.isOutOfStock).length ?? 0;
 
   const items: NavItem[] = [
     { to: '/day', label: 'День', icon: <IconCalendarEvent size={20} /> },
+    { to: '/overview', label: 'Обзор', icon: <IconChartLine size={20} /> },
     {
       to: '/orders',
       label: 'Заказы',
@@ -100,6 +103,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/day" replace />} />
           <Route path="/day/:date?" element={<DayPage />} />
+          <Route path="/overview" element={<OverviewPage />} />
           <Route path="/orders" element={<OrdersPage />} />
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/ingredients" element={<IngredientsPage />} />

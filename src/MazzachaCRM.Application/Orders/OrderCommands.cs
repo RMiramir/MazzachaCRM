@@ -101,9 +101,11 @@ public sealed class CreateOrderHandler(
             customerId,
             command.DueDate,
             command.DueTime,
-            command.Prepayment,
             command.Note,
             command.Items.Select(i => i.ToSpec()));
+
+        if (command.Prepayment > 0)
+            order.AddPayment(DateOnly.FromDateTime(DateTime.Now), command.Prepayment, "Предоплата");
 
         orders.Add(order);
         return order.Id;
@@ -117,7 +119,6 @@ public sealed record UpdateOrderCommand(
     Guid CustomerId,
     DateOnly DueDate,
     TimeOnly? DueTime,
-    decimal Prepayment,
     string? Note,
     IReadOnlyList<OrderItemInput> Items) : ICommand<Unit>;
 
@@ -126,7 +127,6 @@ public sealed class UpdateOrderValidator : AbstractValidator<UpdateOrderCommand>
     public UpdateOrderValidator()
     {
         RuleFor(x => x.CustomerId).NotEmpty().WithMessage("Выберите клиента.");
-        RuleFor(x => x.Prepayment).GreaterThanOrEqualTo(0).WithName("Предоплата");
         RuleFor(x => x.Note).MaximumLength(1000).WithName("Заметка");
         RuleFor(x => x.Items).NotEmpty().WithMessage("Добавьте в заказ хотя бы одно изделие.");
         RuleForEach(x => x.Items).SetValidator(new OrderItemInputValidator());
@@ -146,7 +146,7 @@ public sealed class UpdateOrderHandler(
         _ = await customers.GetByIdAsync(command.CustomerId, ct)
             ?? throw new NotFoundException("Клиент не найден.");
 
-        order.UpdateDetails(command.CustomerId, command.DueDate, command.DueTime, command.Prepayment, command.Note);
+        order.UpdateDetails(command.CustomerId, command.DueDate, command.DueTime, command.Note);
 
         var specs = command.Items.Select(i => i.ToSpec()).ToList();
         if (!order.HasSameItems(specs))
@@ -173,9 +173,9 @@ public sealed class ChangeOrderStatusValidator : AbstractValidator<ChangeOrderSt
 
 /// <summary>
 /// Приводит партии заказа в соответствие со статусом:
-/// «Готов» — партии изготовлены, сырьё списано; «Выдан» — по партиям записана продажа;
-/// возврат в работу — партии удалены, сырьё возвращено; отмена — изготовленное
-/// остаётся обычным остатком, который можно продать или списать.
+/// «Готов» — партии изготовлены в указанный день, сырьё списано, выручка записана в тот же день;
+/// «Выдан» — только отметка; возврат в работу — партии удалены, сырьё возвращено;
+/// отмена — изготовленное остаётся обычным остатком, который можно продать или списать.
 /// </summary>
 public sealed class ChangeOrderStatusHandler(
     IOrderRepository orders,
@@ -219,28 +219,167 @@ public sealed class ChangeOrderStatusHandler(
 
                 break;
 
-            case OrderStatus.Ready or OrderStatus.Completed:
+            case OrderStatus.Ready or OrderStatus.Delivered:
                 if (orderBatches.Count == 0)
                 {
                     var context = await costing.LoadTrackedAsync(ct);
                     orderBatches = order.Items
                         .Select(item => production.Produce(
-                            context, command.Date, item.ProductId, item.Quantity, item.UnitPrice, order.Id))
+                            context, order.ProducedDate!.Value, item.ProductId, item.Quantity, item.UnitPrice, order.Id, item.Id))
                         .ToList();
                 }
 
-                foreach (var batch in orderBatches)
-                {
-                    if (command.Status == OrderStatus.Completed)
-                        batch.SetSalesForDate(command.Date, [new SaleEntry(batch.Quantity, batch.UnitPrice)]);
-                    else
-                        batch.ClearSales();
-                }
-
+                OrderSales.Apply(order, orderBatches);
                 break;
         }
 
         return Unit.Value;
+    }
+}
+
+/// <summary>Продажа по заказу записывается в день готовности: за всё, кроме возвращённого магазином.</summary>
+internal static class OrderSales
+{
+    public static void Apply(Order order, IReadOnlyCollection<ProductionBatch> orderBatches)
+    {
+        var unmatched = order.Items.ToList();
+        var pairs = new List<(ProductionBatch Batch, OrderItem Item)>();
+
+        foreach (var batch in orderBatches.Where(b => b.OrderItemId != null))
+        {
+            var item = unmatched.FirstOrDefault(i => i.Id == batch.OrderItemId);
+            if (item is null)
+                continue;
+            unmatched.Remove(item);
+            pairs.Add((batch, item));
+        }
+
+        // Партии, созданные до появления связи с позицией, сопоставляются по изделию.
+        foreach (var batch in orderBatches.Where(b => b.OrderItemId == null))
+        {
+            var item = unmatched.FirstOrDefault(i => i.ProductId == batch.ProductId);
+            if (item is null)
+                continue;
+            unmatched.Remove(item);
+            pairs.Add((batch, item));
+        }
+
+        foreach (var (batch, item) in pairs)
+        {
+            batch.SetSalesForDate(
+                batch.ProductionDate,
+                item.SoldQuantity > 0 ? [new SaleEntry(item.SoldQuantity, item.UnitPrice)] : []);
+        }
+    }
+}
+
+// ---------- Оплаты ----------
+
+public sealed record AddOrderPaymentCommand(Guid OrderId, DateOnly Date, decimal Amount, string? Note) : ICommand<Guid>;
+
+public sealed class AddOrderPaymentValidator : AbstractValidator<AddOrderPaymentCommand>
+{
+    public AddOrderPaymentValidator()
+    {
+        RuleFor(x => x.Amount).GreaterThan(0).WithName("Сумма оплаты");
+        RuleFor(x => x.Note).MaximumLength(300).WithName("Комментарий");
+    }
+}
+
+public sealed class AddOrderPaymentHandler(IOrderRepository orders) : ICommandHandler<AddOrderPaymentCommand, Guid>
+{
+    public async Task<Guid> Handle(AddOrderPaymentCommand command, CancellationToken ct)
+    {
+        var order = await orders.GetByIdAsync(command.OrderId, ct)
+            ?? throw new NotFoundException("Заказ не найден.");
+        return order.AddPayment(command.Date, command.Amount, command.Note).Id;
+    }
+}
+
+public sealed record RemoveOrderPaymentCommand(Guid OrderId, Guid PaymentId) : ICommand<Unit>;
+
+public sealed class RemoveOrderPaymentHandler(IOrderRepository orders) : ICommandHandler<RemoveOrderPaymentCommand, Unit>
+{
+    public async Task<Unit> Handle(RemoveOrderPaymentCommand command, CancellationToken ct)
+    {
+        var order = await orders.GetByIdAsync(command.OrderId, ct)
+            ?? throw new NotFoundException("Заказ не найден.");
+        order.RemovePayment(command.PaymentId);
+        return Unit.Value;
+    }
+}
+
+// ---------- Отчёт магазина ----------
+
+public sealed record ShopReportItemInput(Guid ItemId, decimal Sold);
+
+public sealed record SubmitShopReportCommand(Guid OrderId, DateOnly Date, IReadOnlyList<ShopReportItemInput> Items)
+    : ICommand<Unit>;
+
+public sealed class SubmitShopReportValidator : AbstractValidator<SubmitShopReportCommand>
+{
+    public SubmitShopReportValidator()
+    {
+        RuleFor(x => x.Items).NotEmpty().WithMessage("Укажите, сколько продано.");
+        RuleForEach(x => x.Items).ChildRules(item =>
+            item.RuleFor(i => i.Sold).GreaterThanOrEqualTo(0).WithName("Продано"));
+    }
+}
+
+/// <summary>
+/// Магазин сообщил, сколько продано: остальное считается возвратом. Выручка дня отправки
+/// уменьшается на возвраты, а возвращённые изделия становятся остатком, который можно продать или списать.
+/// </summary>
+public sealed class SubmitShopReportHandler(IOrderRepository orders, IProductionBatchRepository batches)
+    : ICommandHandler<SubmitShopReportCommand, Unit>
+{
+    public async Task<Unit> Handle(SubmitShopReportCommand command, CancellationToken ct)
+    {
+        var order = await orders.GetByIdAsync(command.OrderId, ct)
+            ?? throw new NotFoundException("Заказ не найден.");
+
+        var returned = new Dictionary<Guid, decimal>();
+        foreach (var input in command.Items)
+        {
+            var item = order.Items.FirstOrDefault(i => i.Id == input.ItemId)
+                ?? throw new NotFoundException("Позиция заказа не найдена.");
+            if (input.Sold > item.Quantity)
+                throw new DomainException($"Продано не может быть больше, чем отправлено ({item.Quantity:0.###}).");
+            returned[item.Id] = item.Quantity - input.Sold;
+        }
+
+        order.RecordReturns(command.Date, returned);
+        OrderSales.Apply(order, await batches.ListByOrderAsync(order.Id, ct));
+        return Unit.Value;
+    }
+}
+
+// ---------- Повтор заказа ----------
+
+public sealed record RepeatOrderCommand(Guid OrderId, DateOnly DueDate) : ICommand<Guid>;
+
+/// <summary>Новый заказ с тем же клиентом и позициями: удобно для регулярных поставок в магазин.</summary>
+public sealed class RepeatOrderHandler(IOrderRepository orders, IProductRepository products)
+    : ICommandHandler<RepeatOrderCommand, Guid>
+{
+    public async Task<Guid> Handle(RepeatOrderCommand command, CancellationToken ct)
+    {
+        var source = await orders.GetByIdAsync(command.OrderId, ct)
+            ?? throw new NotFoundException("Заказ не найден.");
+
+        var items = source.Items.Select(i => new OrderItemInput(i.ProductId, i.Quantity, i.UnitPrice, i.Note)).ToList();
+        await OrderRules.EnsureSellableAsync(products, items, ct);
+
+        var order = Order.Create(
+            await orders.NextNumberAsync(ct),
+            source.CustomerId,
+            command.DueDate,
+            source.DueTime,
+            null,
+            items.Select(i => i.ToSpec()));
+
+        orders.Add(order);
+        return order.Id;
     }
 }
 

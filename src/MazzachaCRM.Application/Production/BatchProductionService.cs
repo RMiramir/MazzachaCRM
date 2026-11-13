@@ -20,7 +20,8 @@ public sealed class BatchProductionService(
         Guid productId,
         decimal quantity,
         decimal? unitPrice,
-        Guid? orderId = null)
+        Guid? orderId = null,
+        Guid? orderItemId = null)
     {
         var product = FindSellable(context, productId);
         var batch = ProductionBatch.Create(
@@ -29,7 +30,8 @@ public sealed class BatchProductionService(
             quantity,
             context.Calculator.UnitCost(product.Id),
             unitPrice ?? product.SalePrice,
-            orderId);
+            orderId,
+            orderItemId);
 
         batches.Add(batch);
         Consume(context, batch);

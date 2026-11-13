@@ -25,6 +25,9 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("IsConsignment")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -146,13 +149,13 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateOnly?>("CompletedDate")
-                        .HasColumnType("TEXT");
-
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
                     b.Property<Guid>("CustomerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateOnly?>("DeliveredDate")
                         .HasColumnType("TEXT");
 
                     b.Property<DateOnly>("DueDate")
@@ -168,10 +171,10 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<int>("Number")
                         .HasColumnType("INTEGER");
 
-                    b.Property<decimal>("Prepayment")
+                    b.Property<DateOnly?>("ProducedDate")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateOnly?>("ProducedDate")
+                    b.Property<DateOnly?>("ReportedDate")
                         .HasColumnType("TEXT");
 
                     b.Property<int>("Status")
@@ -207,6 +210,9 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<decimal>("Quantity")
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal>("ReturnedQuantity")
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal>("UnitPrice")
                         .HasColumnType("TEXT");
 
@@ -217,6 +223,33 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.HasIndex("ProductId");
 
                     b.ToTable("OrderItems", (string)null);
+                });
+
+            modelBuilder.Entity("MazzachaCRM.Domain.Orders.OrderPayment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(300)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Date");
+
+                    b.HasIndex("OrderId");
+
+                    b.ToTable("OrderPayments", (string)null);
                 });
 
             modelBuilder.Entity("MazzachaCRM.Domain.Production.BatchSale", b =>
@@ -286,6 +319,9 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("OrderId")
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid?>("OrderItemId")
+                        .HasColumnType("TEXT");
+
                     b.Property<Guid>("ProductId")
                         .HasColumnType("TEXT");
 
@@ -325,10 +361,16 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("CostMode")
+                        .HasColumnType("INTEGER");
+
                     b.Property<bool>("IsArchived")
                         .HasColumnType("INTEGER");
 
                     b.Property<decimal>("LaborMinutes")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("ManualUnitCost")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Name")
@@ -401,6 +443,9 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<decimal>("HourlyRate")
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal?>("MonthlyProfitGoal")
+                        .HasColumnType("TEXT");
+
                     b.HasKey("Id");
 
                     b.ToTable("Settings", (string)null);
@@ -436,6 +481,15 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("ProductId")
                         .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("MazzachaCRM.Domain.Orders.OrderPayment", b =>
+                {
+                    b.HasOne("MazzachaCRM.Domain.Orders.Order", null)
+                        .WithMany("Payments")
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 
@@ -493,6 +547,8 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("MazzachaCRM.Domain.Orders.Order", b =>
                 {
                     b.Navigation("Items");
+
+                    b.Navigation("Payments");
                 });
 
             modelBuilder.Entity("MazzachaCRM.Domain.Production.ProductionBatch", b =>

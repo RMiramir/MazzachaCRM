@@ -3,6 +3,7 @@ using MazzachaCRM.Application.Ingredients;
 using MazzachaCRM.Application.Orders;
 using MazzachaCRM.Application.Production;
 using MazzachaCRM.Application.Products;
+using MazzachaCRM.Application.Reports;
 using MazzachaCRM.Domain.Common;
 using MazzachaCRM.Domain.Ingredients;
 using MazzachaCRM.Domain.Orders;
@@ -67,9 +68,9 @@ public class OrderFlowTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Produced_order_costs_the_production_day_and_earns_on_the_delivery_day()
+    public async Task Ready_order_books_cost_and_revenue_on_the_ready_day_and_money_when_paid()
     {
-        var id = await CreateOrder();
+        var id = await CreateOrder(prepayment: 30);
 
         await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Ready, Friday));
         Assert.Equal(8000m, await FlourStock());
@@ -78,31 +79,94 @@ public class OrderFlowTests : IAsyncLifetime
         var batch = Assert.Single(friday.Batches);
         Assert.Equal(1, batch.OrderNumber);
         Assert.Equal(20m, friday.Summary.TotalCosts);
-        Assert.Equal(0m, friday.Summary.Revenue);
+        Assert.Equal(100m, friday.Summary.Revenue);
+        Assert.Equal(80m, friday.Summary.Profit);
+        Assert.Equal(70m, friday.Summary.DebtsTotal);
+        Assert.Contains(friday.Orders, o => o.Id == id);
 
-        await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Completed, Saturday));
+        // Выдача ничего не меняет в цифрах, доплата приходит деньгами в субботу.
+        await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Delivered, Saturday));
+        await _app.Send(new AddOrderPaymentCommand(id, Saturday, 70, null));
 
         var saturday = await _app.Query(new GetDayQuery(Saturday));
-        Assert.Equal(100m, saturday.Summary.Revenue);
-        Assert.Equal(80m, saturday.Summary.ProfitOnSold);
-        Assert.Equal(0m, saturday.CarryOver.Single().Remaining);
+        Assert.Equal(0m, saturday.Summary.Revenue);
+        Assert.Equal(70m, saturday.Summary.Received);
+        Assert.Equal(0m, saturday.Summary.DebtsTotal);
+        Assert.Empty(saturday.CarryOver);
 
         var order = await _app.Query(new GetOrderQuery(id));
+        Assert.True(order.IsPaid);
         Assert.Equal(Friday, order.ProducedDate);
-        Assert.Equal(Saturday, order.CompletedDate);
+        Assert.Equal(Saturday, order.DeliveredDate);
+        Assert.Equal(2, order.Payments.Count);
+        Assert.Equal(70m, (await _app.Query(new GetPeriodReportQuery(Saturday, Saturday))).Totals.Received);
     }
 
     [Fact]
-    public async Task Order_can_be_completed_in_one_step()
+    public async Task Order_can_be_delivered_in_one_step()
     {
         var id = await CreateOrder();
 
-        await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Completed, Saturday));
+        await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Delivered, Saturday));
 
         var saturday = await _app.Query(new GetDayQuery(Saturday));
         Assert.Equal(20m, saturday.Summary.TotalCosts);
         Assert.Equal(100m, saturday.Summary.Revenue);
         Assert.Equal(80m, saturday.Summary.Profit);
+    }
+
+    [Fact]
+    public async Task Shop_report_reduces_revenue_of_the_shipping_day_and_returns_become_leftovers()
+    {
+        var shop = await _app.Send(new CreateCustomerCommand("Магазин", null, null, true));
+        var id = await _app.Send(new CreateOrderCommand(
+            shop, null, null, Friday, null, 0, null, [new OrderItemInput(_cake, 10, 50, null)]));
+        await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Delivered, Friday));
+
+        var friday = await _app.Query(new GetDayQuery(Friday));
+        Assert.Equal(500m, friday.Summary.Revenue);
+        Assert.True(friday.Batches.Single().OrderIsConsignment);
+        Assert.Equal(500m, friday.Summary.DebtsTotal);
+
+        // Через три дня магазин сообщил: продано 7, три вернули.
+        var itemId = (await _app.Query(new GetOrderQuery(id))).Items.Single().Id;
+        var reportDay = Friday.AddDays(3);
+        await _app.Send(new SubmitShopReportCommand(id, reportDay, [new ShopReportItemInput(itemId, 7)]));
+
+        friday = await _app.Query(new GetDayQuery(Friday));
+        Assert.Equal(350m, friday.Summary.Revenue);
+        Assert.Equal(3m, friday.Batches.Single().OrderReturned);
+        Assert.Equal(3m, friday.Batches.Single().Remaining);
+
+        // Возврат виден в остатках и продаётся с витрины как обычно.
+        var report = await _app.Query(new GetDayQuery(reportDay));
+        var leftover = Assert.Single(report.CarryOver);
+        Assert.Equal(3m, leftover.RemainingAtStart);
+        await _app.Send(new SetBatchSalesCommand(leftover.Id, reportDay, [new SaleEntryInput(2, 40)]));
+        report = await _app.Query(new GetDayQuery(reportDay));
+        Assert.Equal(80m, report.Summary.Revenue);
+        Assert.Equal(80m, report.Summary.Received);
+
+        // Магазин должен только за проданное.
+        await _app.Send(new AddOrderPaymentCommand(id, reportDay, 200, "Магазин, частично"));
+        var order = await _app.Query(new GetOrderQuery(id));
+        Assert.Equal(350m, order.Total);
+        Assert.Equal(150m, order.Balance);
+        Assert.Equal(150m, Assert.Single(await _app.Query(new GetCustomersQuery("Магазин"))).Debt);
+        Assert.Single(await _app.Query(new GetOrdersQuery(OrderScope.Unpaid, null, null, null)));
+    }
+
+    [Fact]
+    public async Task Sales_of_an_order_batch_on_its_ready_day_are_managed_by_the_order()
+    {
+        var id = await CreateOrder();
+        await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Ready, Friday));
+        var batch = (await _app.Query(new GetDayQuery(Friday))).Batches.Single();
+
+        await Assert.ThrowsAsync<DomainException>(() => _app.Send(new DeleteBatchCommand(batch.Id)));
+        await Assert.ThrowsAsync<DomainException>(() =>
+            _app.Send(new SetBatchSalesCommand(batch.Id, Friday, [new SaleEntryInput(1, 100)])));
+        await Assert.ThrowsAsync<DomainException>(() => _app.Send(new DeleteOrderCommand(id)));
     }
 
     [Fact]
@@ -129,23 +193,10 @@ public class OrderFlowTests : IAsyncLifetime
         var batch = Assert.Single(friday.Batches);
         Assert.Null(batch.OrderId);
         Assert.Equal(1m, batch.Remaining);
+        Assert.Equal(0m, friday.Summary.Revenue);
 
-        // Торт можно продать обычным покупателям.
         await _app.Send(new SetBatchSalesCommand(batch.Id, Saturday, [new SaleEntryInput(1, 90)]));
         Assert.Equal(90m, (await _app.Query(new GetDayQuery(Saturday))).Summary.Revenue);
-    }
-
-    [Fact]
-    public async Task Order_batches_are_managed_only_through_the_order()
-    {
-        var id = await CreateOrder();
-        await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Ready, Friday));
-        var batch = (await _app.Query(new GetDayQuery(Friday))).Batches.Single();
-
-        await Assert.ThrowsAsync<DomainException>(() => _app.Send(new DeleteBatchCommand(batch.Id)));
-        await Assert.ThrowsAsync<DomainException>(() =>
-            _app.Send(new SetBatchSalesCommand(batch.Id, Friday, [new SaleEntryInput(1, 100)])));
-        await Assert.ThrowsAsync<DomainException>(() => _app.Send(new DeleteOrderCommand(id)));
     }
 
     [Fact]
@@ -155,16 +206,28 @@ public class OrderFlowTests : IAsyncLifetime
         var order = await _app.Query(new GetOrderQuery(id));
         await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Ready, Friday));
 
-        // Предоплату и дату менять можно.
         await _app.Send(new UpdateOrderCommand(
-            id, order.CustomerId, Saturday.AddDays(1), null, 100, "Перенесли",
+            id, order.CustomerId, Saturday.AddDays(1), null, "Перенесли",
             [new OrderItemInput(_cake, 1, 100, null)]));
-        Assert.Equal(0m, (await _app.Query(new GetOrderQuery(id))).Balance);
+        Assert.Equal(Saturday.AddDays(1), (await _app.Query(new GetOrderQuery(id))).DueDate);
 
-        // Позиции уже изготовлены: менять нельзя.
         await Assert.ThrowsAsync<DomainException>(() => _app.Send(new UpdateOrderCommand(
-            id, order.CustomerId, Saturday, null, 100, null,
+            id, order.CustomerId, Saturday, null, null,
             [new OrderItemInput(_cake, 2, 100, null)])));
+    }
+
+    [Fact]
+    public async Task Repeat_creates_a_new_order_with_the_same_items()
+    {
+        var id = await CreateOrder(quantity: 3);
+
+        var copy = await _app.Send(new RepeatOrderCommand(id, Saturday.AddDays(7)));
+
+        var order = await _app.Query(new GetOrderQuery(copy));
+        Assert.Equal(2, order.Number);
+        Assert.Equal(Saturday.AddDays(7), order.DueDate);
+        Assert.Equal(300m, order.Total);
+        Assert.Equal(0m, order.Paid);
     }
 
     [Fact]

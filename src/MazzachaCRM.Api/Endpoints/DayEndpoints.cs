@@ -14,6 +14,10 @@ public static class DayEndpoints
                 dispatcher.Query(new GetDayQuery(date), ct))
             .WithTags("День");
 
+        api.MapPost("/days/{date}/copy-from/{fromDate}", async (DateOnly date, DateOnly fromDate, IDispatcher dispatcher, CancellationToken ct) =>
+                Results.Ok(new { copied = await dispatcher.Send(new CopyDayCommand(fromDate, date), ct) }))
+            .WithTags("День");
+
         var batches = api.MapGroup("/batches").WithTags("День");
 
         batches.MapPost("/", async (CreateBatchCommand command, IDispatcher dispatcher, CancellationToken ct) =>
@@ -76,6 +80,9 @@ public static class DayEndpoints
 
         group.MapGet("/margins", (IDispatcher dispatcher, CancellationToken ct) =>
             dispatcher.Query(new GetMarginReportQuery(), ct));
+
+        group.MapGet("/overview", (DateOnly? today, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.Query(new GetOverviewQuery(today ?? DateOnly.FromDateTime(DateTime.Now)), ct));
     }
 
     public sealed record SalesRequest(IReadOnlyList<SaleEntryInput>? Entries);

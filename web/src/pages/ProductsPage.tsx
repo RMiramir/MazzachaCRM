@@ -35,7 +35,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAction, useCurrency, useIngredients, useProduct, useProducts, useSettings } from '../api/hooks';
-import type { MeasureUnit, ProductDetail, ProductListItem, ProductType } from '../api/types';
+import type { CostMode, MeasureUnit, ProductDetail, ProductListItem, ProductType } from '../api/types';
 import { NumberField } from '../components/inputs';
 import { EmptyState, Loading, PageHeader, Profit, Section, useConfirm } from '../components/ui';
 import { money, percent, quantity, toNumber, unitLabel } from '../lib/format';
@@ -169,6 +169,11 @@ function ProductsTable({
                       В архиве
                     </Badge>
                   )}
+                  {product.costMode === 'Manual' && (
+                    <Badge size="xs" color="blue" variant="light">
+                      С/с вручную
+                    </Badge>
+                  )}
                   {product.costError && (
                     <Tooltip label={product.costError}>
                       <IconAlertTriangle size={16} color="var(--mantine-color-red-6)" />
@@ -287,6 +292,8 @@ function ProductForm({ initial, onClose }: { initial: ProductDetail | null; onCl
   const [yieldQuantity, setYieldQuantity] = useState<number | string>(initial?.yieldQuantity ?? 1);
   const [yieldUnit, setYieldUnit] = useState<MeasureUnit>(initial?.yieldUnit ?? 'Piece');
   const [laborMinutes, setLaborMinutes] = useState<number | string>(initial?.laborMinutes || '');
+  const [costMode, setCostMode] = useState<CostMode>(initial?.costMode ?? 'Recipe');
+  const [manualUnitCost, setManualUnitCost] = useState<number | string>(initial?.manualUnitCost || '');
   const [salePrice, setSalePrice] = useState<number | string>(initial?.salePrice || '');
   const [note, setNote] = useState(initial?.note ?? '');
   const [lines, setLines] = useState<DraftLine[]>(
@@ -303,6 +310,7 @@ function ProductForm({ initial, onClose }: { initial: ProductDetail | null; onCl
   const update = useAction(api.products.update, 'Изделие сохранено');
 
   const isFinished = type === 'Finished';
+  const isManual = costMode === 'Manual';
 
   // Что можно добавить в состав: продукты, упаковка и другие изделия (кроме самого себя).
   const componentOptions = useMemo(() => {
@@ -348,6 +356,8 @@ function ProductForm({ initial, onClose }: { initial: ProductDetail | null; onCl
     laborMinutes: toNumber(laborMinutes) ?? 0,
     salePrice: isFinished ? (toNumber(salePrice) ?? 0) : 0,
     lines: lineInputs,
+    costMode,
+    manualUnitCost: toNumber(manualUnitCost) ?? 0,
   };
   const [debouncedDraft] = useDebouncedValue(draft, 250);
   const preview = useQuery({
@@ -358,7 +368,8 @@ function ProductForm({ initial, onClose }: { initial: ProductDetail | null; onCl
   });
 
   const completeLines = lineInputs.filter((l) => (l.ingredientId || l.componentProductId) && l.quantity > 0);
-  const canSave = name.trim() !== '' && draft.yieldQuantity > 0 && completeLines.length > 0;
+  const canSave =
+    name.trim() !== '' && draft.yieldQuantity > 0 && (isManual ? toNumber(manualUnitCost) !== null : completeLines.length > 0);
 
   const save = async () => {
     const body = {
@@ -369,7 +380,9 @@ function ProductForm({ initial, onClose }: { initial: ProductDetail | null; onCl
       laborMinutes: draft.laborMinutes,
       salePrice: draft.salePrice,
       note: note.trim() || null,
-      lines: completeLines,
+      lines: isManual ? [] : completeLines,
+      costMode,
+      manualUnitCost: draft.manualUnitCost,
     };
     if (initial) await update.mutateAsync({ id: initial.id, ...body });
     else await create.mutateAsync(body);
@@ -434,15 +447,45 @@ function ProductForm({ initial, onClose }: { initial: ProductDetail | null; onCl
                 allowDeselect={false}
               />
             )}
-            <NumberField
-              label="Работа, минут"
-              description="На всю партию"
-              value={laborMinutes}
-              onChange={setLaborMinutes}
-              decimalScale={0}
+            {!isManual && (
+              <NumberField
+                label="Работа, минут"
+                description="На всю партию"
+                value={laborMinutes}
+                onChange={setLaborMinutes}
+                decimalScale={0}
+              />
+            )}
+          </Group>
+
+          <Group gap="sm" mt="xs" align="center">
+            <Text size="sm" fw={500}>
+              Себестоимость:
+            </Text>
+            <SegmentedControl
+              size="xs"
+              value={costMode}
+              onChange={(value) => setCostMode(value as CostMode)}
+              data={[
+                { value: 'Recipe', label: 'По составу' },
+                { value: 'Manual', label: 'Указать вручную' },
+              ]}
             />
           </Group>
 
+          {isManual ? (
+            <Stack gap={4}>
+              <NumberField
+                label={`Себестоимость за 1 ${isFinished ? 'шт' : unitLabel[yieldUnit]}, ${currency}`}
+                description="Когда цена известна без расчёта: покупной товар или изделие, состав которого вы ещё не заводили. Сырьё со склада не списывается."
+                value={manualUnitCost}
+                onChange={setManualUnitCost}
+                decimalScale={4}
+                maw={360}
+              />
+            </Stack>
+          ) : (
+          <>
           <Divider label="Состав на одну партию" labelPosition="left" mt="xs" />
 
           {noIngredients && (
@@ -505,6 +548,8 @@ function ProductForm({ initial, onClose }: { initial: ProductDetail | null; onCl
               Добавить в состав
             </Button>
           </Group>
+          </>
+          )}
 
           <Textarea
             label="Заметка"
