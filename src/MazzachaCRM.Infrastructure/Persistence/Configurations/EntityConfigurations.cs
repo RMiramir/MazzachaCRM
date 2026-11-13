@@ -161,5 +161,6 @@ internal sealed class AppSettingsConfiguration : IEntityTypeConfiguration<AppSet
     {
         builder.ToTable("Settings");
         builder.Property(x => x.Currency).HasMaxLength(20).IsRequired();
+        builder.Property(x => x.BusinessName).HasMaxLength(100);
     }
 }

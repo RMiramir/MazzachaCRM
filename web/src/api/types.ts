@@ -12,6 +12,7 @@ export interface Settings {
   hourlyRate: number;
   currency: string;
   monthlyProfitGoal: number | null;
+  businessName: string | null;
   databasePath: string;
 }
 

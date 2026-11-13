@@ -16,6 +16,9 @@ public sealed class AppSettings : AggregateRoot
 
     public string Currency { get; private set; } = "сомони";
 
+    /// <summary>Название кондитерской: показывается в шапке программы и во вкладке браузера.</summary>
+    public string? BusinessName { get; private set; }
+
     /// <summary>Цель по прибыли на месяц. Пусто — цель не задана.</summary>
     public decimal? MonthlyProfitGoal { get; private set; }
 
@@ -27,6 +30,8 @@ public sealed class AppSettings : AggregateRoot
         Currency = Guard.NotEmpty(currency, "Валюта");
         MonthlyProfitGoal = monthlyProfitGoal is > 0 ? monthlyProfitGoal : null;
     }
+
+    public void Rename(string? businessName) => BusinessName = Guard.Optional(businessName);
 }
 
 public interface ISettingsRepository

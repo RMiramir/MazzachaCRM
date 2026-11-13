@@ -435,6 +435,10 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("BusinessName")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Currency")
                         .IsRequired()
                         .HasMaxLength(20)

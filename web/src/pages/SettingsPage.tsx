@@ -13,12 +13,14 @@ export function SettingsPage() {
   const [hourlyRate, setHourlyRate] = useState<number | string>('');
   const [currency, setCurrency] = useState('');
   const [goal, setGoal] = useState<number | string>('');
+  const [businessName, setBusinessName] = useState('');
 
   useEffect(() => {
     if (settings) {
       setHourlyRate(settings.hourlyRate);
       setCurrency(settings.currency);
       setGoal(settings.monthlyProfitGoal ?? '');
+      setBusinessName(settings.businessName ?? '');
     }
   }, [settings]);
 
@@ -34,7 +36,8 @@ export function SettingsPage() {
   const changed =
     (toNumber(hourlyRate) ?? 0) !== settings.hourlyRate ||
     currency.trim() !== settings.currency ||
-    (toNumber(goal) ?? null) !== (settings.monthlyProfitGoal ?? null);
+    (toNumber(goal) ?? null) !== (settings.monthlyProfitGoal ?? null) ||
+    businessName.trim() !== (settings.businessName ?? '');
 
   return (
     <Stack gap="md" maw={640}>
@@ -44,10 +47,18 @@ export function SettingsPage() {
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            update.mutate({ hourlyRate: toNumber(hourlyRate) ?? 0, currency: currency.trim(), monthlyProfitGoal: toNumber(goal) });
+            update.mutate({ hourlyRate: toNumber(hourlyRate) ?? 0, currency: currency.trim(), monthlyProfitGoal: toNumber(goal), businessName: businessName.trim() || null });
           }}
         >
           <Stack gap="sm">
+            <TextInput
+              label="Название кондитерской"
+              description="Показывается в шапке программы"
+              placeholder="Например, Кондитерская Лола"
+              value={businessName}
+              onChange={(event) => setBusinessName(event.currentTarget.value)}
+              maw={360}
+            />
             <NumberField
               label="Стоимость часа работы"
               description="Если указать, время работы из карточки изделия войдёт в себестоимость. Ноль — работа не учитывается."

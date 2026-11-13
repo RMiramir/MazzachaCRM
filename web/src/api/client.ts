@@ -76,7 +76,7 @@ type Created = { id: string };
 export const api = {
   settings: {
     get: () => get<Settings>('/settings'),
-    update: (body: { hourlyRate: number; currency: string; monthlyProfitGoal: number | null }) => put<void>('/settings', body),
+    update: (body: { hourlyRate: number; currency: string; monthlyProfitGoal: number | null; businessName: string | null }) => put<void>('/settings', body),
   },
 
   ingredients: {

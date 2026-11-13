@@ -12,7 +12,11 @@ import {
 } from '@tabler/icons-react';
 import type { ReactNode } from 'react';
 import { Navigate, NavLink as RouterLink, Route, Routes, useLocation } from 'react-router-dom';
-import { useIngredients, useOrders } from './api/hooks';
+import { useIngredients, useOrders, useSettings } from './api/hooks';
+import { useEffect } from 'react';
+
+/** Название программы. Название кондитерской задаётся в настройках. */
+export const PRODUCT_NAME = 'Сладкий учёт';
 import { CustomersPage } from './pages/CustomersPage';
 import { DayPage } from './pages/DayPage';
 import { IngredientsPage } from './pages/IngredientsPage';
@@ -31,6 +35,11 @@ interface NavItem {
 
 export function App() {
   const [opened, { toggle, close }] = useDisclosure();
+  const businessName = useSettings().data?.businessName ?? null;
+
+  useEffect(() => {
+    document.title = businessName ? `${businessName} · ${PRODUCT_NAME}` : PRODUCT_NAME;
+  }, [businessName]);
   const location = useLocation();
 
   // Счётчики в меню: активные заказы и продукты, которые заканчиваются.
@@ -77,8 +86,13 @@ export function App() {
           <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Меню" />
           <img src="/favicon.svg" alt="" width={26} height={26} />
           <Text fw={700} fz="lg">
-            Mazzacha CRM
+            {businessName ?? PRODUCT_NAME}
           </Text>
+          {businessName && (
+            <Text size="sm" c="dimmed" visibleFrom="xs">
+              {PRODUCT_NAME}
+            </Text>
+          )}
         </Group>
       </AppShell.Header>
 
