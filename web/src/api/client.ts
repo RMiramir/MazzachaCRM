@@ -155,7 +155,7 @@ export const api = {
     addPayment: ({ id, ...body }: { id: string; date: string; amount: number; note: string | null }) =>
       post<{ id: string }>(`/orders/${id}/payments`, body),
     removePayment: ({ id, paymentId }: { id: string; paymentId: string }) => del<void>(`/orders/${id}/payments/${paymentId}`),
-    shopReport: ({ id, ...body }: { id: string; date: string; items: { itemId: string; sold: number }[] }) =>
+    shopReport: ({ id, ...body }: { id: string; date: string; items: { itemId: string; sold: number; writtenOff: number }[] }) =>
       post<void>(`/orders/${id}/shop-report`, body),
     repeat: ({ id, dueDate }: { id: string; dueDate: string }) => post<{ id: string }>(`/orders/${id}/repeat`, { dueDate }),
     setStatus: ({ id, status, date }: { id: string; status: OrderStatus; date: string }) =>

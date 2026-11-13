@@ -157,6 +157,36 @@ public class OrderFlowTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Shop_returns_can_be_written_off_at_once_and_then_do_not_carry_over()
+    {
+        var shop = await _app.Send(new CreateCustomerCommand("Магазин", null, null, true));
+        var id = await _app.Send(new CreateOrderCommand(
+            shop, null, null, Friday, null, 0, null, [new OrderItemInput(_cake, 10, 50, null)]));
+        await _app.Send(new ChangeOrderStatusCommand(id, OrderStatus.Delivered, Friday));
+        var itemId = (await _app.Query(new GetOrderQuery(id))).Items.Single().Id;
+
+        // Продано 7, из трёх возвращённых два списали сразу, один переходит в остатки.
+        await _app.Send(new SubmitShopReportCommand(id, Saturday, [new ShopReportItemInput(itemId, 7, 2)]));
+
+        var friday = await _app.Query(new GetDayQuery(Friday));
+        Assert.Equal(350m, friday.Summary.Revenue);
+        Assert.Equal(2m, friday.Batches.Single().WrittenOff);
+        Assert.Equal(1m, friday.Batches.Single().Remaining);
+        Assert.Equal(170m, friday.Summary.ActualProfit);
+        Assert.Equal(200m, friday.Summary.PotentialProfit); // плюс один торт в остатке: 50 − 20
+        Assert.Equal(1m, (await _app.Query(new GetDayQuery(Saturday))).CarryOver.Single().RemainingAtStart);
+        Assert.Equal(2m, (await _app.Query(new GetOrderQuery(id))).Items.Single().ReturnedWrittenOff);
+
+        // Списали весь возврат: в остатках ничего не остаётся.
+        await _app.Send(new SubmitShopReportCommand(id, Saturday, [new ShopReportItemInput(itemId, 7, 3)]));
+        Assert.Empty((await _app.Query(new GetDayQuery(Saturday))).CarryOver);
+
+        // Списать больше, чем вернули, нельзя.
+        await Assert.ThrowsAsync<DomainException>(() =>
+            _app.Send(new SubmitShopReportCommand(id, Saturday, [new ShopReportItemInput(itemId, 7, 4)])));
+    }
+
+    [Fact]
     public async Task Sales_of_an_order_batch_on_its_ready_day_are_managed_by_the_order()
     {
         var id = await CreateOrder();

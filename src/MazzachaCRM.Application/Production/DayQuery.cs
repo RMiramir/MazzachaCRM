@@ -72,7 +72,9 @@ public sealed record DaySummaryDto(
     decimal UnsoldValueAtCost,
     decimal Received,
     decimal ReceivedFromOrders,
-    decimal DebtsTotal);
+    decimal DebtsTotal,
+    decimal ActualProfit,
+    decimal DayOrdersBalance);
 
 public sealed record DayDto(
     DateOnly Date,
@@ -150,6 +152,11 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
             .Where(s => s.Date == date && !(b.OrderId != null && s.Date == b.ProductionDate))
             .Sum(s => s.Amount));
 
+        // Фактическая прибыль: проданное минус его себестоимость, списанное в этот день и расходы дня.
+        // Потенциальная: она же плюс то, что ещё можно заработать на непроданных остатках.
+        var actualProfit = all.Sum(b => b.RevenueOn(date) - b.SoldOn(date) * b.UnitCost - b.WrittenOffOn(date) * b.UnitCost)
+            - expensesTotal;
+
         var summary = new DaySummaryDto(
             productionCost.Money(),
             today.Sum(b => b.LaborCost).Money(),
@@ -158,14 +165,16 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
             revenue.Money(),
             (revenue - totalCosts).Money(),
             potentialRevenue.Money(),
-            (potentialRevenue - totalCosts).Money(),
+            (actualProfit + all.Sum(b => b.RemainingAtEndOf(date) * (b.UnitPrice - b.UnitCost))).Money(),
             all.Sum(b => b.RevenueOn(date) - b.SoldOn(date) * b.UnitCost).Money(),
             all.Sum(b => b.WrittenOffOn(date) * b.UnitCost).Money(),
             all.Sum(b => b.RemainingAtEndOf(date) * b.UnitPrice).Money(),
             all.Sum(b => b.RemainingAtEndOf(date) * b.UnitCost).Money(),
             (receivedFromOrders + cashSales).Money(),
             receivedFromOrders.Money(),
-            relatedOrders.Where(o => o.IsProduced && o.Balance > 0).Sum(o => o.Balance).Money());
+            relatedOrders.Where(o => o.IsProduced && o.Balance > 0).Sum(o => o.Balance).Money(),
+            actualProfit.Money(),
+            dayOrders.Where(o => o.Balance > 0).Sum(o => o.Balance).Money());
 
         var mapper = await OrderMapper.CreateAsync(db, costing, dayOrders, ct);
         var orderRows = dayOrders

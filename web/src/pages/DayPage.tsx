@@ -153,73 +153,57 @@ export function DayPage() {
 
 function Summary({ day, currency }: { day: Day; currency: string }) {
   const s = day.summary;
-  const costParts = [
-    s.expenses > 0 ? `производство ${money(s.productionCost)}, общие расходы ${money(s.expenses)}` : null,
-    s.laborCost > 0 ? `в том числе работа ${money(s.laborCost)}` : null,
+  const showcase = s.received - s.receivedFromOrders;
+  const actualParts = [
+    s.expenses > 0 ? `с учётом расходов дня ${money(s.expenses)}` : null,
+    s.writeOffLoss > 0 ? `списано на ${money(s.writeOffLoss)}` : null,
   ].filter(Boolean);
-  const cashFromShowcase = s.received - s.receivedFromOrders;
 
   return (
-    <div>
-      <SimpleGrid cols={{ base: 2, md: 4 }} spacing="md">
-        <StatCard label="Затраты" value={s.totalCosts} currency={currency} hint={costParts.join(' · ') || 'себестоимость приготовленного'} />
-        <StatCard label="Выручка" value={s.revenue} currency={currency} hint="продано с витрины и готовые заказы" />
-        <StatCard label="Прибыль дня" value={s.profit} currency={currency} signed hint="выручка минус затраты" />
-        <StatCard
-          label="Получено денег"
-          value={s.received}
-          currency={currency}
-          hint={
-            s.receivedFromOrders > 0
-              ? `оплаты заказов ${money(s.receivedFromOrders)}, витрина ${money(cashFromShowcase)}`
-              : 'продажи с витрины и оплаты заказов'
-          }
-        />
-      </SimpleGrid>
-
-      <Group gap="xl" mt="sm" px={4} wrap="wrap">
-        <Text size="sm">
-          <Text span c="dimmed">
-            Если продать всё:{' '}
-          </Text>
-          <Profit value={s.potentialProfit} fw={600} />
-        </Text>
-        <Text size="sm">
-          <Text span c="dimmed">
-            Прибыль с проданного:{' '}
-          </Text>
-          <Profit value={s.profitOnSold} fw={600} />
-        </Text>
-        {s.unsoldValueAtPrice > 0 && (
-          <Text size="sm">
-            <Text span c="dimmed">
-              Не продано на{' '}
-            </Text>
-            <Text span fw={600}>
-              {money(s.unsoldValueAtPrice)}
-            </Text>
-          </Text>
-        )}
-        {s.writeOffLoss > 0 && (
-          <Text size="sm">
-            <Text span c="dimmed">
-              Списано на{' '}
-            </Text>
-            <Text span fw={600} c="red.7">
-              {money(s.writeOffLoss)}
-            </Text>
-          </Text>
-        )}
-        {s.debtsTotal > 0 && (
-          <Anchor component={Link} to="/orders?scope=Unpaid" size="sm">
-            Вам должны:{' '}
-            <Text span fw={600} c="orange.8">
-              {money(s.debtsTotal)}
-            </Text>
-          </Anchor>
-        )}
-      </Group>
-    </div>
+    <SimpleGrid cols={{ base: 2, md: 4 }} spacing="md">
+      <StatCard
+        label="Должны по заказам"
+        value={s.dayOrdersBalance}
+        currency={currency}
+        hint={
+          <>
+            заказы этого дня
+            {s.debtsTotal > 0 && (
+              <>
+                {' · '}
+                <Anchor component={Link} to="/orders?scope=Unpaid" size="xs">
+                  всего долгов {money(s.debtsTotal)}
+                </Anchor>
+              </>
+            )}
+          </>
+        }
+      />
+      <StatCard
+        label="Получено денег"
+        value={s.received}
+        currency={currency}
+        hint={
+          s.receivedFromOrders > 0
+            ? `оплаты заказов ${money(s.receivedFromOrders)}, витрина ${money(showcase)}`
+            : 'продажи с витрины и оплаты заказов'
+        }
+      />
+      <StatCard
+        label="Потенциальная прибыль"
+        value={s.potentialProfit}
+        currency={currency}
+        signed
+        hint={s.unsoldValueAtPrice > 0 ? `если продать остаток на ${money(s.unsoldValueAtPrice)}` : 'всё продано'}
+      />
+      <StatCard
+        label="Фактическая прибыль"
+        value={s.actualProfit}
+        currency={currency}
+        signed
+        hint={actualParts.length > 0 ? `с проданного, ${actualParts.join(', ')}` : 'с того, что уже продано'}
+      />
+    </SimpleGrid>
   );
 }
 

@@ -272,7 +272,7 @@ export function OrderCard({ order, actionDate }: { order: Order; actionDate: str
           <Text size="sm">{order.itemsSummary}</Text>
           {order.items.some((i) => i.returned > 0) && (
             <Text size="xs" c="grape.7">
-              Возврат: {order.items.filter((i) => i.returned > 0).map((i) => `${i.productName} × ${quantity(i.returned)}`).join(', ')}
+              Возврат: {order.items.filter((i) => i.returned > 0).map((i) => `${i.productName} × ${quantity(i.returned)}${i.returnedWrittenOff > 0 ? (i.returnedWrittenOff === i.returned ? ', списан' : `, списано ${quantity(i.returnedWrittenOff)}`) : ''}`).join('; ')}
             </Text>
           )}
           {order.note && (
@@ -393,11 +393,25 @@ function ShopReportModal({ order, date, onClose }: { order: Order; date: string;
   const [sold, setSold] = useState<Record<string, number | string>>(
     Object.fromEntries(order.items.map((item) => [item.id, item.sold])),
   );
+  const [writtenOff, setWrittenOff] = useState<Record<string, number | string>>(
+    Object.fromEntries(order.items.map((item) => [item.id, item.returnedWrittenOff])),
+  );
 
   const rows = order.items.map((item) => {
     const soldNumber = toNumber(sold[item.id]) ?? 0;
-    return { item, sold: soldNumber, returned: item.quantity - soldNumber, invalid: soldNumber > item.quantity };
+    const returned = item.quantity - soldNumber;
+    const writeOff = toNumber(writtenOff[item.id]) ?? 0;
+    return {
+      item,
+      sold: soldNumber,
+      returned,
+      writeOff,
+      invalid: soldNumber > item.quantity || writeOff > Math.max(returned, 0),
+    };
   });
+  const allWrittenOff = rows.every((row) => row.returned <= 0 || row.writeOff === row.returned);
+  const writeOffAll = (checked: boolean) =>
+    setWrittenOff(Object.fromEntries(rows.map((row) => [row.item.id, checked ? Math.max(row.returned, 0) : 0])));
   const total = rows.reduce((sum, row) => sum + Math.max(row.sold, 0) * row.item.unitPrice, 0);
   const invalid = rows.some((row) => row.invalid);
 
@@ -405,7 +419,7 @@ function ShopReportModal({ order, date, onClose }: { order: Order; date: string;
     await report.mutateAsync({
       id: order.id,
       date: reportDate,
-      items: rows.map((row) => ({ itemId: row.item.id, sold: row.sold })),
+      items: rows.map((row) => ({ itemId: row.item.id, sold: row.sold, writtenOff: Math.min(row.writeOff, Math.max(row.returned, 0)) })),
     });
     onClose();
   };
@@ -414,8 +428,9 @@ function ShopReportModal({ order, date, onClose }: { order: Order; date: string;
     <Modal opened onClose={onClose} title={`${order.isConsignment ? 'Отчёт магазина' : 'Возврат'}: №${order.number}, ${order.customerName}`} size="lg" centered>
       <Stack gap="sm">
         <Text size="sm" c="dimmed">
-          Укажите, сколько продано. Остальное считается возвратом: выручка дня отправки ({shortDate(order.producedDate)})
-          уменьшится, а вернувшиеся изделия появятся в «Остатках прошлых дней», где их можно продать или списать.
+          Укажите, сколько продано. Остальное — возврат: выручка дня отправки ({shortDate(order.producedDate)}) уменьшится.
+          Возврат можно списать сразу в день отправки — тогда он никуда не переходит. Несписанный возврат появится в
+          «Остатках прошлых дней», где его можно продать или списать позже.
         </Text>
         <Table verticalSpacing={6}>
           <Table.Thead>
@@ -424,11 +439,12 @@ function ShopReportModal({ order, date, onClose }: { order: Order; date: string;
               <Table.Th className="num">Отправлено</Table.Th>
               <Table.Th className="num">Продано</Table.Th>
               <Table.Th className="num">Вернули</Table.Th>
+              <Table.Th className="num">Списать сразу</Table.Th>
               <Table.Th className="num">К оплате</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
-            {rows.map(({ item, sold: soldNumber, returned, invalid: rowInvalid }) => (
+            {rows.map(({ item, sold: soldNumber, returned, writeOff, invalid: rowInvalid }) => (
               <Table.Tr key={item.id}>
                 <Table.Td>{item.productName}</Table.Td>
                 <Table.Td className="num">{quantity(item.quantity)}</Table.Td>
@@ -450,11 +466,31 @@ function ShopReportModal({ order, date, onClose }: { order: Order; date: string;
                     {quantity(Math.max(returned, 0))}
                   </Text>
                 </Table.Td>
+                <Table.Td className="num">
+                  <Group justify="flex-end">
+                    <NumberField
+                      aria-label={`Списать сразу: ${item.productName}`}
+                      size="xs"
+                      w={80}
+                      value={writtenOff[item.id]}
+                      onChange={(value) => setWrittenOff({ ...writtenOff, [item.id]: value })}
+                      error={writeOff > Math.max(returned, 0)}
+                      disabled={returned <= 0}
+                      decimalScale={3}
+                    />
+                  </Group>
+                </Table.Td>
                 <Table.Td className="num">{money(Math.max(soldNumber, 0) * item.unitPrice)}</Table.Td>
               </Table.Tr>
             ))}
           </Table.Tbody>
         </Table>
+        <Checkbox
+          label="Списать весь возврат сразу, не переносить в остатки"
+          checked={allWrittenOff && rows.some((row) => row.returned > 0)}
+          disabled={!rows.some((row) => row.returned > 0)}
+          onChange={(event) => writeOffAll(event.currentTarget.checked)}
+        />
         <Group justify="space-between" align="flex-end">
           <DatePickerInput label="Дата отчёта" value={reportDate} onChange={(value) => value && setReportDate(value)} valueFormat="D MMMM YYYY" w={200} />
           <Text>

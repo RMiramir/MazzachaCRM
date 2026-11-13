@@ -201,6 +201,7 @@ public sealed class ChangeOrderStatusHandler(
                 foreach (var batch in orderBatches)
                 {
                     batch.ClearSales();
+                    batch.SetWriteOffForDate(batch.ProductionDate, 0, null);
                     batch.ReleaseFromOrder();
                 }
 
@@ -242,6 +243,16 @@ internal static class OrderSales
 {
     public static void Apply(Order order, IReadOnlyCollection<ProductionBatch> orderBatches)
     {
+        foreach (var (batch, item) in Match(order, orderBatches))
+        {
+            batch.SetSalesForDate(
+                batch.ProductionDate,
+                item.SoldQuantity > 0 ? [new SaleEntry(item.SoldQuantity, item.UnitPrice)] : []);
+        }
+    }
+
+    public static List<(ProductionBatch Batch, OrderItem Item)> Match(Order order, IReadOnlyCollection<ProductionBatch> orderBatches)
+    {
         var unmatched = order.Items.ToList();
         var pairs = new List<(ProductionBatch Batch, OrderItem Item)>();
 
@@ -264,12 +275,7 @@ internal static class OrderSales
             pairs.Add((batch, item));
         }
 
-        foreach (var (batch, item) in pairs)
-        {
-            batch.SetSalesForDate(
-                batch.ProductionDate,
-                item.SoldQuantity > 0 ? [new SaleEntry(item.SoldQuantity, item.UnitPrice)] : []);
-        }
+        return pairs;
     }
 }
 
@@ -311,7 +317,11 @@ public sealed class RemoveOrderPaymentHandler(IOrderRepository orders) : IComman
 
 // ---------- Отчёт магазина ----------
 
-public sealed record ShopReportItemInput(Guid ItemId, decimal Sold);
+/// <param name="WrittenOff">
+/// Сколько из возврата списать сразу, в день отправки: тогда оно не переходит в остатки следующих дней.
+/// Остальной возврат становится остатком, который можно продать или списать позже.
+/// </param>
+public sealed record ShopReportItemInput(Guid ItemId, decimal Sold, decimal WrittenOff = 0);
 
 public sealed record SubmitShopReportCommand(Guid OrderId, DateOnly Date, IReadOnlyList<ShopReportItemInput> Items)
     : ICommand<Unit>;
@@ -322,7 +332,10 @@ public sealed class SubmitShopReportValidator : AbstractValidator<SubmitShopRepo
     {
         RuleFor(x => x.Items).NotEmpty().WithMessage("Укажите, сколько продано.");
         RuleForEach(x => x.Items).ChildRules(item =>
-            item.RuleFor(i => i.Sold).GreaterThanOrEqualTo(0).WithName("Продано"));
+        {
+            item.RuleFor(i => i.Sold).GreaterThanOrEqualTo(0).WithName("Продано");
+            item.RuleFor(i => i.WrittenOff).GreaterThanOrEqualTo(0).WithName("Списать");
+        });
     }
 }
 
@@ -339,17 +352,33 @@ public sealed class SubmitShopReportHandler(IOrderRepository orders, IProduction
             ?? throw new NotFoundException("Заказ не найден.");
 
         var returned = new Dictionary<Guid, decimal>();
+        var writeOffs = new Dictionary<Guid, decimal>();
         foreach (var input in command.Items)
         {
             var item = order.Items.FirstOrDefault(i => i.Id == input.ItemId)
                 ?? throw new NotFoundException("Позиция заказа не найдена.");
             if (input.Sold > item.Quantity)
                 throw new DomainException($"Продано не может быть больше, чем отправлено ({item.Quantity:0.###}).");
-            returned[item.Id] = item.Quantity - input.Sold;
+            var itemReturned = item.Quantity - input.Sold;
+            if (input.WrittenOff > itemReturned)
+                throw new DomainException($"Списать можно не больше, чем вернули ({itemReturned:0.###}).");
+            returned[item.Id] = itemReturned;
+            writeOffs[item.Id] = input.WrittenOff;
         }
 
         order.RecordReturns(command.Date, returned);
-        OrderSales.Apply(order, await batches.ListByOrderAsync(order.Id, ct));
+
+        var orderBatches = await batches.ListByOrderAsync(order.Id, ct);
+        foreach (var (batch, item) in OrderSales.Match(order, orderBatches))
+        {
+            // Сначала убираем прежнее списание, чтобы оно не мешало пересчитать продажу.
+            batch.SetWriteOffForDate(batch.ProductionDate, 0, null);
+            batch.SetSalesForDate(
+                batch.ProductionDate,
+                item.SoldQuantity > 0 ? [new SaleEntry(item.SoldQuantity, item.UnitPrice)] : []);
+            batch.SetWriteOffForDate(batch.ProductionDate, writeOffs.GetValueOrDefault(item.Id), "Возврат, списан сразу");
+        }
+
         return Unit.Value;
     }
 }

@@ -14,6 +14,7 @@ public sealed record OrderItemDto(
     string ProductName,
     decimal Quantity,
     decimal Returned,
+    decimal ReturnedWrittenOff,
     decimal Sold,
     decimal UnitPrice,
     decimal Amount,
@@ -136,6 +137,7 @@ internal sealed class OrderMapper
 
         var orderIds = orders.Select(o => o.Id).ToList();
         var batches = await db.Batches
+            .Include(b => b.WriteOffs)
             .Where(b => b.OrderId != null && orderIds.Contains(b.OrderId.Value))
             .ToListAsync(ct);
 
@@ -153,6 +155,7 @@ internal sealed class OrderMapper
                 ProductName(i.ProductId),
                 i.Quantity,
                 i.ReturnedQuantity,
+                ReturnedWrittenOff(order, i),
                 i.SoldQuantity,
                 i.UnitPrice.Precise(),
                 i.Amount.Money(),
@@ -188,6 +191,13 @@ internal sealed class OrderMapper
             string.Join(", ", items.Select(i => $"{i.ProductName} × {i.Quantity:0.###}")),
             cost?.Money(),
             cost is { } value ? (order.Total - value).Money() : null);
+    }
+
+    /// <summary>Сколько возврата списано сразу, в день отправки.</summary>
+    private decimal ReturnedWrittenOff(Order order, OrderItem item)
+    {
+        var batch = _batchesByOrder[order.Id].FirstOrDefault(b => b.OrderItemId == item.Id);
+        return batch?.WrittenOffOn(batch.ProductionDate) ?? 0;
     }
 
     private decimal? Cost(Order order)

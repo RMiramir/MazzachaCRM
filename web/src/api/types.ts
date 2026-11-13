@@ -206,6 +206,8 @@ export interface DaySummary {
   received: number;
   receivedFromOrders: number;
   debtsTotal: number;
+  actualProfit: number;
+  dayOrdersBalance: number;
 }
 
 export interface Expense {
@@ -249,6 +251,7 @@ export interface OrderItem {
   productName: string;
   quantity: number;
   returned: number;
+  returnedWrittenOff: number;
   sold: number;
   unitPrice: number;
   amount: number;
