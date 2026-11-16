@@ -15,6 +15,7 @@ import {
   TextInput,
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
+import { notifications } from '@mantine/notifications';
 import {
   IconAdjustments,
   IconDotsVertical,
@@ -30,6 +31,7 @@ import { useState } from 'react';
 import { api } from '../api/client';
 import { useAction, useCurrency, useIngredients, useStockMovements } from '../api/hooks';
 import type { Ingredient, IngredientKind, MeasureUnit } from '../api/types';
+import { BulkPurchaseModal } from '../components/BulkPurchase';
 import { NumberField } from '../components/inputs';
 import { EmptyState, Loading, PageHeader, Section, useConfirm } from '../components/ui';
 import { kindLabel, money, movementLabel, quantity, shortDate, toNumber, today, unitLabel } from '../lib/format';
@@ -43,6 +45,23 @@ export function IngredientsPage() {
   const [tab, setTab] = useState<string | null>('list');
   const [journalIngredient, setJournalIngredient] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [bulkPurchase, setBulkPurchase] = useState(false);
+  const confirm = useConfirm();
+  const reset = useAction(api.stock.reset);
+
+  const withStock = (ingredients ?? []).filter((i) => i.stockQuantity !== 0).length;
+
+  const resetStock = async () => {
+    const ok = await confirm({
+      title: 'Обнулить все остатки?',
+      message: `Остаток станет нулевым у всех продуктов, в том числе ушедших в минус (сейчас таких с ненулевым остатком: ${withStock}). Цены и составы не изменятся. Каждое изменение попадёт в журнал склада.`,
+      confirmLabel: 'Обнулить',
+      danger: true,
+    });
+    if (!ok) return;
+    const result = await reset.mutateAsync(today());
+    notifications.show({ message: `Остатки обнулены: продуктов — ${result.count}`, color: 'teal', autoClose: 3000 });
+  };
 
   const openHistory = (ingredient: Ingredient) => {
     setJournalIngredient(ingredient.id);
@@ -52,8 +71,24 @@ export function IngredientsPage() {
   return (
     <Stack gap="md">
       <PageHeader title="Продукты и склад">
-        <Button leftSection={<IconPlus size={16} />} onClick={() => setDialog({ kind: 'form', ingredient: null })}>
+        <Button
+          variant="subtle"
+          color="red"
+          onClick={() => void resetStock().catch(() => undefined)}
+          disabled={withStock === 0}
+          loading={reset.isPending}
+        >
+          Обнулить остатки
+        </Button>
+        <Button
+          variant="default"
+          leftSection={<IconPlus size={16} />}
+          onClick={() => setDialog({ kind: 'form', ingredient: null })}
+        >
           Новый продукт
+        </Button>
+        <Button leftSection={<IconShoppingCart size={16} />} onClick={() => setBulkPurchase(true)}>
+          Закупка
         </Button>
       </PageHeader>
 
@@ -80,6 +115,7 @@ export function IngredientsPage() {
         </Tabs.Panel>
       </Tabs>
 
+      {bulkPurchase && <BulkPurchaseModal ingredients={ingredients ?? []} onClose={() => setBulkPurchase(false)} />}
       {dialog?.kind === 'form' && <IngredientForm ingredient={dialog.ingredient} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'purchase' && <PurchaseModal ingredient={dialog.ingredient} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'adjust' && <AdjustModal ingredient={dialog.ingredient} onClose={() => setDialog(null)} />}
@@ -188,7 +224,7 @@ function IngredientsList({
                       {ingredient.name}
                     </Text>
                     {ingredient.kind === 'Packaging' && (
-                      <Badge size="xs" variant="light" color="gray">
+                      <Badge size="sm" variant="light" color="gray">
                         Упаковка
                       </Badge>
                     )}

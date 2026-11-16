@@ -38,6 +38,10 @@ export const useProduct = (id: string | null) =>
 
 export const useDay = (date: string) => useQuery({ queryKey: ['day', date], queryFn: () => api.days.get(date) });
 
+/** Готовые изделия для формы заказа. */
+export const useFreeStock = (forOrderId: string | null) =>
+  useQuery({ queryKey: ['free-stock', forOrderId], queryFn: () => api.batches.free(forOrderId) });
+
 export const useStockMovements = (params: { ingredientId?: string | null; from?: string | null; to?: string | null }, enabled = true) =>
   useQuery({ queryKey: ['movements', params], queryFn: () => api.stock.movements(params), enabled });
 

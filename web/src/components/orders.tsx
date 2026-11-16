@@ -14,6 +14,7 @@ import {
   Text,
   Textarea,
   TextInput,
+  UnstyledButton,
 } from '@mantine/core';
 import { DatePickerInput, TimePicker } from '@mantine/dates';
 import { notifications } from '@mantine/notifications';
@@ -21,6 +22,7 @@ import {
   IconArrowsExchange,
   IconBuildingStore,
   IconCash,
+  IconChevronDown,
   IconCopy,
   IconDotsVertical,
   IconPencil,
@@ -31,7 +33,7 @@ import {
 } from '@tabler/icons-react';
 import { useState } from 'react';
 import { api } from '../api/client';
-import { useAction, useCurrency, useCustomers, useProducts } from '../api/hooks';
+import { useAction, useCurrency, useCustomers, useFreeStock, useProducts } from '../api/hooks';
 import type { Order, OrderStatus } from '../api/types';
 import { addDays, money, orderStatusColor, orderStatusLabel, quantity, shortDate, shortTime, toNumber, today } from '../lib/format';
 import { NumberField } from './inputs';
@@ -96,6 +98,139 @@ export function OrderStatusBadge({ order }: { order: Order }) {
   );
 }
 
+const STEPS: OrderStatus[] = ['New', 'InProgress', 'Ready', 'Delivered'];
+
+const stepLabel = (order: Order, status: OrderStatus) =>
+  status === 'Delivered' && order.isConsignment ? 'Отправлен' : orderStatusLabel[status];
+
+function statusDone(order: Order, status: OrderStatus): string {
+  switch (status) {
+    case 'New':
+      return 'Заказ возвращён в начало';
+    case 'InProgress':
+      return order.status === 'Ready' ? 'Заказ возвращён в работу' : 'Заказ взят в работу';
+    case 'Ready':
+      return order.status === 'Delivered'
+        ? 'Отметка о выдаче снята'
+        : 'Заказ готов: затраты и выручка записаны в этот день, сырьё списано';
+    case 'Delivered':
+      return order.isConsignment ? 'Поставка отправлена' : 'Заказ выдан';
+    default:
+      return 'Заказ отменён';
+  }
+}
+
+/**
+ * Перевод заказа в другой статус. Там, где действие убирает изделия из дня
+ * или отменяет заказ, сначала спрашивает подтверждение.
+ */
+export function useChangeStatus(order: Order, actionDate: string) {
+  const confirm = useConfirm();
+  const setStatus = useAction(api.orders.setStatus);
+  const produced = order.status === 'Ready' || order.status === 'Delivered';
+
+  const change = async (status: OrderStatus) => {
+    if (status === order.status) return;
+
+    if (status === 'Cancelled') {
+      const ok = await confirm({
+        title: `Отменить заказ №${order.number}?`,
+        message: produced
+          ? 'Заказ уже изготовлен. Изделия останутся в таблице дня как обычный остаток: их можно продать или списать.'
+          : 'Заказ останется в списке со статусом «Отменён». Изделия, взятые из готового, вернутся на витрину.',
+        confirmLabel: 'Отменить заказ',
+        danger: true,
+      });
+      if (!ok) return;
+    } else if (produced && (status === 'New' || status === 'InProgress')) {
+      const ok = await confirm({
+        title: `Вернуть заказ №${order.number} в работу?`,
+        message:
+          'Изделия, испечённые под этот заказ, уберутся из таблицы дня, сырьё вернётся на склад. Взятое из готового останется за заказом.',
+        confirmLabel: 'Вернуть в работу',
+      });
+      if (!ok) return;
+    }
+
+    await setStatus.mutateAsync({ id: order.id, status, date: actionDate });
+    notifications.show({ message: `№${order.number}. ${statusDone(order, status)}`, color: 'teal', autoClose: 3000 });
+  };
+
+  return { change, pending: setStatus.isPending, target: setStatus.variables?.status };
+}
+
+/** Полоса шагов заказа: нажатие на шаг сразу переводит заказ в этот статус. */
+export function OrderStepper({ order, actionDate }: { order: Order; actionDate: string }) {
+  const { change, pending, target } = useChangeStatus(order, actionDate);
+
+  if (order.status === 'Cancelled') {
+    return (
+      <Group gap={8}>
+        <Badge color="red" variant="light">
+          Отменён
+        </Badge>
+        <Button variant="subtle" size="compact-sm" onClick={() => void change('New').catch(() => undefined)} loading={pending}>
+          Вернуть в работу
+        </Button>
+      </Group>
+    );
+  }
+
+  const current = STEPS.indexOf(order.status);
+  return (
+    <Button.Group aria-label={`Статус заказа №${order.number}`}>
+      {STEPS.map((step, index) => {
+        const isCurrent = index === current;
+        const allowed = allowedTargets[order.status].includes(step);
+        return (
+          <Button
+            key={step}
+            size="compact-sm"
+            variant={isCurrent ? 'filled' : index < current ? 'light' : 'default'}
+            aria-pressed={isCurrent}
+            disabled={!isCurrent && !allowed}
+            loading={pending && target === step}
+            onClick={() => {
+              if (!isCurrent) void change(step).catch(() => undefined);
+            }}
+          >
+            {stepLabel(order, step)}
+          </Button>
+        );
+      })}
+    </Button.Group>
+  );
+}
+
+/** Статус в таблице заказов: нажатие открывает список, куда можно перевести заказ. */
+export function OrderStatusMenu({ order, actionDate }: { order: Order; actionDate: string }) {
+  const { change } = useChangeStatus(order, actionDate);
+  return (
+    <Menu position="bottom-start" withinPortal>
+      <Menu.Target>
+        <UnstyledButton aria-label={`Сменить статус заказа №${order.number}`}>
+          <Group gap={2} wrap="nowrap">
+            <OrderStatusBadge order={order} />
+            <IconChevronDown size={14} color="var(--mantine-color-gray-6)" />
+          </Group>
+        </UnstyledButton>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>Перевести в статус</Menu.Label>
+        {allowedTargets[order.status].map((status) => (
+          <Menu.Item
+            key={status}
+            color={status === 'Cancelled' ? 'red' : undefined}
+            onClick={() => void change(status).catch(() => undefined)}
+          >
+            {status === 'Cancelled' ? 'Отменить заказ' : stepLabel(order, status)}
+          </Menu.Item>
+        ))}
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
 /** Остаток к оплате одной строкой. */
 export function PaymentText({ order }: { order: Order }) {
   if (order.status === 'Cancelled') return null;
@@ -125,7 +260,7 @@ export function PaymentText({ order }: { order: Order }) {
 
 export function ShopBadge() {
   return (
-    <Badge size="sm" variant="light" color="grape" leftSection={<IconBuildingStore size={12} />}>
+    <Badge size="md" variant="light" color="grape" leftSection={<IconBuildingStore size={12} />}>
       Магазин
     </Badge>
   );
@@ -144,13 +279,25 @@ type Dialog =
  * Главная кнопка следующего шага и меню остальных действий.
  * `actionDate` — день, в который записываются готовность, выдача и оплата.
  */
-export function OrderActions({ order, actionDate, compact }: { order: Order; actionDate: string; compact?: boolean }) {
+export function OrderActions({
+  order,
+  actionDate,
+  compact,
+  paymentOnly,
+}: {
+  order: Order;
+  actionDate: string;
+  compact?: boolean;
+  /** Рядом уже есть полоса шагов: показывать только кнопку оплаты и меню. */
+  paymentOnly?: boolean;
+}) {
   const confirm = useConfirm();
   const [dialog, setDialog] = useState<Dialog | null>(null);
-  const setStatus = useAction(api.orders.setStatus);
+  const { change, pending } = useChangeStatus(order, actionDate);
   const remove = useAction(api.orders.remove, 'Заказ удалён');
 
-  const step = nextStep(order);
+  const next = nextStep(order);
+  const step = paymentOnly && next?.kind !== 'payment' ? null : next;
   const produced = order.status === 'Ready' || order.status === 'Delivered';
   const active = order.status !== 'Delivered' && order.status !== 'Cancelled';
 
@@ -160,21 +307,10 @@ export function OrderActions({ order, actionDate, compact }: { order: Order; act
       setDialog({ kind: 'payment' });
       return;
     }
-    await setStatus.mutateAsync({ id: order.id, status: step.status, date: actionDate });
-    notifications.show({ message: `№${order.number}. ${step.done}`, color: 'teal', autoClose: 3000 });
+    await change(step.status);
   };
 
-  const cancel = async () => {
-    const ok = await confirm({
-      title: `Отменить заказ №${order.number}?`,
-      message: produced
-        ? 'Заказ уже изготовлен. Изделия останутся в таблице дня как обычный остаток: их можно продать или списать.'
-        : 'Заказ останется в списке со статусом «Отменён».',
-      confirmLabel: 'Отменить заказ',
-      danger: true,
-    });
-    if (ok) setStatus.mutate({ id: order.id, status: 'Cancelled', date: actionDate });
-  };
+  const cancel = () => change('Cancelled');
 
   const removeOrder = async () => {
     const ok = await confirm({
@@ -196,7 +332,7 @@ export function OrderActions({ order, actionDate, compact }: { order: Order; act
             size={compact ? 'compact-sm' : 'sm'}
             leftSection={step.kind === 'payment' ? <IconCash size={16} /> : undefined}
             onClick={() => void runStep().catch(() => undefined)}
-            loading={setStatus.isPending}
+            loading={pending}
           >
             {step.label}
           </Button>
@@ -225,10 +361,10 @@ export function OrderActions({ order, actionDate, compact }: { order: Order; act
               {order.isConsignment ? 'Повторить поставку' : 'Повторить заказ'}
             </Menu.Item>
             <Menu.Item leftSection={<IconArrowsExchange size={16} />} onClick={() => setDialog({ kind: 'status' })}>
-              Сменить статус
+              Статус с выбором даты
             </Menu.Item>
             {active && (
-              <Menu.Item leftSection={<IconX size={16} />} onClick={() => void cancel()}>
+              <Menu.Item leftSection={<IconX size={16} />} onClick={() => void cancel().catch(() => undefined)}>
                 Отменить заказ
               </Menu.Item>
             )}
@@ -263,13 +399,25 @@ export function OrderCard({ order, actionDate }: { order: Order; actionDate: str
               №{order.number} · {order.customerName}
             </Text>
             {order.isConsignment && <ShopBadge />}
-            <OrderStatusBadge order={order} />
+            {order.status === 'Delivered' && <OrderStatusBadge order={order} />}
+          </Group>
+          <Group mt={4} mb={2}>
+            <OrderStepper order={order} actionDate={actionDate} />
           </Group>
           <Text size="sm" c="dimmed">
             {order.dueTime ? `К ${shortTime(order.dueTime)} · ` : ''}
             {order.customerPhone ?? ''}
           </Text>
           <Text size="sm">{order.itemsSummary}</Text>
+          {order.items.some((i) => i.reservedBatchId !== null) && (
+            <Text size="xs" c="dimmed">
+              Из готового:{' '}
+              {order.items
+                .filter((i) => i.reservedBatchId !== null)
+                .map((i) => `${i.productName} × ${quantity(i.quantity)}`)
+                .join(', ')}
+            </Text>
+          )}
           {order.items.some((i) => i.returned > 0) && (
             <Text size="xs" c="grape.7">
               Возврат: {order.items.filter((i) => i.returned > 0).map((i) => `${i.productName} × ${quantity(i.returned)}${i.returnedWrittenOff > 0 ? (i.returnedWrittenOff === i.returned ? ', списан' : `, списано ${quantity(i.returnedWrittenOff)}`) : ''}`).join('; ')}
@@ -292,7 +440,7 @@ export function OrderCard({ order, actionDate }: { order: Order; actionDate: str
             )}
           </Group>
         </Stack>
-        <OrderActions order={order} actionDate={actionDate} />
+        <OrderActions order={order} actionDate={actionDate} paymentOnly />
       </Group>
     </Paper>
   );
@@ -614,16 +762,26 @@ interface DraftItem {
   quantity: number | string;
   unitPrice: number | string;
   note: string;
+  /** Строка дня, из которой берутся готовые изделия. Пусто — приготовить под заказ. */
+  fromBatchId: string | null;
 }
 
 let nextItemKey = 1;
-const emptyItem = (): DraftItem => ({ key: nextItemKey++, productId: null, quantity: 1, unitPrice: '', note: '' });
+const emptyItem = (): DraftItem => ({
+  key: nextItemKey++,
+  productId: null,
+  quantity: 1,
+  unitPrice: '',
+  note: '',
+  fromBatchId: null,
+});
 
 /** Новый заказ или изменение существующего. `defaultDate` подставляется в день выдачи нового заказа. */
 export function OrderEditor({ order, defaultDate, onClose }: { order: Order | null; defaultDate?: string; onClose: () => void }) {
   const currency = useCurrency();
   const { data: customers } = useCustomers();
   const { data: products } = useProducts(false);
+  const { data: freeStock } = useFreeStock(order?.id ?? null);
   const create = useAction(api.orders.create, 'Заказ записан');
   const update = useAction(api.orders.update, 'Заказ сохранён');
 
@@ -644,6 +802,7 @@ export function OrderEditor({ order, defaultDate, onClose }: { order: Order | nu
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           note: item.note ?? '',
+          fromBatchId: item.reservedBatchId,
         }))
       : [emptyItem()],
   );
@@ -667,12 +826,25 @@ export function OrderEditor({ order, defaultDate, onClose }: { order: Order | nu
       quantity: toNumber(item.quantity) ?? 0,
       unitPrice: toNumber(item.unitPrice) ?? 0,
       note: item.note.trim() || null,
+      fromBatchId: item.fromBatchId,
     }));
+
+  // Готовые изделия: что доступно по каждому изделию и не взято ли больше, чем есть.
+  const stockFor = (productId: string | null) => (freeStock ?? []).filter((s) => s.productId === productId);
+  const takenFrom = (batchId: string) =>
+    parsedItems.filter((i) => i.fromBatchId === batchId).reduce((sum, i) => sum + i.quantity, 0);
+  const shortage = (item: DraftItem) => {
+    if (!item.fromBatchId) return null;
+    const source = (freeStock ?? []).find((s) => s.batchId === item.fromBatchId);
+    return source && takenFrom(source.batchId) > source.available ? source.available : null;
+  };
+  const stockOk = items.every((item) => shortage(item) === null);
+
   const total = parsedItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
   const prepaymentNumber = toNumber(prepayment) ?? 0;
 
   const customerReady = isNewCustomer ? customerName.trim() !== '' : customerId !== null;
-  const canSave = customerReady && parsedItems.length > 0 && parsedItems.every((item) => item.quantity > 0);
+  const canSave = customerReady && parsedItems.length > 0 && parsedItems.every((item) => item.quantity > 0) && stockOk;
 
   const changeItem = (key: number, patch: Partial<DraftItem>) =>
     setItems(items.map((item) => (item.key === key ? { ...item, ...patch } : item)));
@@ -780,7 +952,8 @@ export function OrderEditor({ order, defaultDate, onClose }: { order: Order | nu
         )}
         <Stack gap={6}>
           {items.map((item) => (
-            <Group key={item.key} gap="xs" wrap="nowrap" align="center">
+            <div key={item.key}>
+            <Group gap="xs" wrap="nowrap" align="center">
               <Select
                 aria-label="Изделие"
                 placeholder="Изделие"
@@ -788,7 +961,11 @@ export function OrderEditor({ order, defaultDate, onClose }: { order: Order | nu
                 value={item.productId}
                 onChange={(value) => {
                   const product = finished.find((p) => p.id === value);
-                  changeItem(item.key, { productId: value, unitPrice: product ? product.salePrice : item.unitPrice });
+                  changeItem(item.key, {
+                    productId: value,
+                    unitPrice: product ? product.salePrice : item.unitPrice,
+                    fromBatchId: null,
+                  });
                 }}
                 searchable
                 nothingFoundMessage="Такого изделия нет"
@@ -829,6 +1006,37 @@ export function OrderEditor({ order, defaultDate, onClose }: { order: Order | nu
                 <IconTrash size={16} />
               </ActionIcon>
             </Group>
+            {stockFor(item.productId).length > 0 && (
+              <Group gap="xs" mt={4} align="center" wrap="wrap">
+                <Text size="xs" c="dimmed">
+                  Откуда:
+                </Text>
+                <Select
+                  size="xs"
+                  aria-label="Откуда взять изделие"
+                  w={340}
+                  allowDeselect={false}
+                  disabled={itemsLocked}
+                  data={[
+                    { value: 'bake', label: 'Приготовить под заказ' },
+                    ...stockFor(item.productId).map((source) => ({
+                      value: source.batchId,
+                      label: `Из готового, ${source.productionDate === today() ? 'сегодня' : shortDate(source.productionDate)}: ${
+                        source.reservedForThisOrder ? 'уже в этом заказе' : 'свободно'
+                      } ${quantity(source.available)} шт`,
+                    })),
+                  ]}
+                  value={item.fromBatchId ?? 'bake'}
+                  onChange={(value) => changeItem(item.key, { fromBatchId: value === 'bake' ? null : value })}
+                />
+                {shortage(item) !== null && (
+                  <Text size="xs" c="red.7">
+                    Есть только {quantity(shortage(item))} шт. Остальное добавьте отдельной позицией «Приготовить».
+                  </Text>
+                )}
+              </Group>
+            )}
+            </div>
           ))}
         </Stack>
         {!itemsLocked && (

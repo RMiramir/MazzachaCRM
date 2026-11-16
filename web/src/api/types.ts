@@ -169,6 +169,7 @@ export interface DayBatch {
   orderNumber: number | null;
   orderIsConsignment: boolean;
   orderReturned: number;
+  fromStock: boolean;
 }
 
 export interface DayCarryOver {
@@ -189,6 +190,7 @@ export interface DayCarryOver {
   orderId: string | null;
   orderNumber: number | null;
   orderIsConsignment: boolean;
+  orderSaleLocked: boolean;
 }
 
 export interface DaySummary {
@@ -257,6 +259,7 @@ export interface OrderItem {
   unitPrice: number;
   amount: number;
   note: string | null;
+  reservedBatchId: string | null;
 }
 
 export interface OrderPayment {
@@ -296,6 +299,29 @@ export interface OrderItemInput {
   quantity: number;
   unitPrice: number;
   note: string | null;
+  /** Свободная строка дня, из которой взять готовые изделия. Пусто — приготовить под заказ. */
+  fromBatchId: string | null;
+}
+
+/** Готовые изделия, которые можно взять в заказ. */
+export interface FreeStock {
+  batchId: string;
+  productId: string;
+  productionDate: string;
+  available: number;
+  unitPrice: number;
+  unitCost: number;
+  reservedForThisOrder: boolean;
+}
+
+export interface PurchaseLineInput {
+  ingredientId: string | null;
+  newName: string | null;
+  newKind: IngredientKind | null;
+  newUnit: MeasureUnit | null;
+  quantity: number;
+  totalCost: number;
+  updatePrice: boolean;
 }
 
 export interface OrderInput {

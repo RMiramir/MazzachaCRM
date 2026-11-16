@@ -192,7 +192,7 @@ function CustomerForm({ customer, onClose }: { customer: Customer | null; onClos
                       <Text size="sm" className="tabular">
                         {money(order.total)}
                       </Text>
-                      <Badge size="sm" color={orderStatusColor[order.status]} variant="light">
+                      <Badge size="md" color={orderStatusColor[order.status]} variant="light">
                         {orderStatusLabel[order.status]}
                       </Badge>
                     </Group>

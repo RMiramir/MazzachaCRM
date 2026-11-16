@@ -30,7 +30,7 @@ interface InlineNumberProps {
 /**
  * Число прямо в ячейке таблицы. Сохраняется по Enter или при уходе с поля, Esc отменяет ввод.
  */
-export function InlineNumber({ value, onCommit, label, disabled, width = 64, decimalScale = 2 }: InlineNumberProps) {
+export function InlineNumber({ value, onCommit, label, disabled, width = 68, decimalScale = 2 }: InlineNumberProps) {
   const [draft, setDraft] = useState<number | string>(value);
   const [saving, setSaving] = useState(false);
 

@@ -165,12 +165,12 @@ function ProductsTable({
                     {product.name}
                   </Text>
                   {product.isArchived && (
-                    <Badge size="xs" color="gray" variant="light">
+                    <Badge size="sm" color="gray" variant="light">
                       В архиве
                     </Badge>
                   )}
                   {product.costMode === 'Manual' && (
-                    <Badge size="xs" color="blue" variant="light">
+                    <Badge size="sm" color="blue" variant="light">
                       С/с вручную
                     </Badge>
                   )}

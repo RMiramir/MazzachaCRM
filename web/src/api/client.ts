@@ -3,6 +3,7 @@ import type {
   Customer,
   CustomerInput,
   Day,
+  FreeStock,
   Ingredient,
   IngredientInput,
   MarginRow,
@@ -15,6 +16,7 @@ import type {
   ProductDetail,
   ProductInput,
   ProductListItem,
+  PurchaseLineInput,
   RecipeLineInput,
   SaleEntry,
   Settings,
@@ -96,6 +98,9 @@ export const api = {
     movements: (params: { ingredientId?: string | null; from?: string | null; to?: string | null }) =>
       get<StockMovements>(`/stock/movements${query(params)}`),
     removeMovement: (id: string) => del<void>(`/stock/movements/${id}`),
+    purchases: (body: { date: string; lines: PurchaseLineInput[]; note: string | null }) =>
+      post<{ count: number }>('/stock/purchases', body),
+    reset: (date: string) => post<{ count: number }>('/stock/reset', { date }),
   },
 
   products: {
@@ -127,6 +132,7 @@ export const api = {
       post<Created>('/batches', body),
     update: ({ id, ...body }: { id: string; quantity: number; unitPrice: number }) => put<void>(`/batches/${id}`, body),
     remove: (id: string) => del<void>(`/batches/${id}`),
+    free: (forOrderId: string | null) => get<FreeStock[]>(`/batches/free${query({ forOrderId })}`),
     recalculateCost: (id: string) => post<void>(`/batches/${id}/recalculate-cost`),
     setSales: ({ id, date, entries }: { id: string; date: string; entries: SaleEntry[] }) =>
       put<void>(`/batches/${id}/sales/${date}`, { entries }),

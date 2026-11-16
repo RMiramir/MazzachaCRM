@@ -254,13 +254,13 @@ function OrderBadge({ number, shop }: { number: number | null; shop?: boolean })
   if (number === null) return null;
   if (shop) {
     return (
-      <Badge size="sm" variant="light" color="grape" component={Link} to="/orders" style={{ cursor: 'pointer', flexShrink: 0 }}>
+      <Badge size="md" variant="light" color="grape" component={Link} to="/orders" style={{ cursor: 'pointer', flexShrink: 0 }}>
         Магазин №{number}
       </Badge>
     );
   }
   return (
-    <Badge size="sm" variant="light" color="blue" component={Link} to="/orders" style={{ cursor: 'pointer', flexShrink: 0 }}>
+    <Badge size="md" variant="light" color="blue" component={Link} to="/orders" style={{ cursor: 'pointer', flexShrink: 0 }}>
       Заказ №{number}
     </Badge>
   );
@@ -283,6 +283,20 @@ function BatchesTable({
   const rows = day.batches;
   const sum = (pick: (b: DayBatch) => number) => rows.reduce((total, b) => total + pick(b), 0);
 
+  // Сервер отдаёт строки по изделиям: сначала витрина, затем заказы.
+  // Заказные партии одного изделия складываются в одну строку.
+  type DisplayRow = { kind: 'free'; batch: DayBatch } | { kind: 'orders'; batches: DayBatch[] };
+  const display: DisplayRow[] = [];
+  for (const batch of rows) {
+    if (batch.orderId === null) {
+      display.push({ kind: 'free', batch });
+      continue;
+    }
+    const last = display[display.length - 1];
+    if (last?.kind === 'orders' && last.batches[0].productId === batch.productId) last.batches.push(batch);
+    else display.push({ kind: 'orders', batches: [batch] });
+  }
+
   const removeBatch = async (batch: DayBatch) => {
     const ok = await confirm({
       title: 'Удалить строку?',
@@ -298,10 +312,18 @@ function BatchesTable({
       <Table verticalSpacing={6} horizontalSpacing="xs" highlightOnHover>
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Изделие</Table.Th>
+            <Table.Th className="name-cell">Изделие</Table.Th>
             <Table.Th className="num">Кол‑во</Table.Th>
-            <Table.Th className="num"><span style={{ whiteSpace: 'nowrap' }}>С/с</span> за шт</Table.Th>
-            <Table.Th className="num">Цена за шт</Table.Th>
+            <Table.Th className="num" style={{ whiteSpace: 'nowrap' }}>
+              С/с
+              <br />
+              за шт
+            </Table.Th>
+            <Table.Th className="num" style={{ whiteSpace: 'nowrap' }}>
+              Цена
+              <br />
+              за шт
+            </Table.Th>
             <Table.Th className="num">Продано</Table.Th>
             <Table.Th className="num">Списано</Table.Th>
             <Table.Th className="num">Остаток</Table.Th>
@@ -313,8 +335,11 @@ function BatchesTable({
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
-          {rows.map((batch) => {
-            const locked = batch.orderId !== null;
+          {display.map((row) => {
+            if (row.kind === 'orders') return <OrdersRow key={`orders-${row.batches[0].id}`} batches={row.batches} />;
+
+            const batch = row.batch;
+            const locked = false;
             const later = [
               batch.soldLater > 0 ? `продано ${quantity(batch.soldLater)}` : null,
               batch.writtenOffLater > 0 ? `списано ${quantity(batch.writtenOffLater)}` : null,
@@ -446,6 +471,104 @@ function BatchesTable({
         </Table.Tbody>
       </Table>
     </div>
+  );
+}
+
+/**
+ * Одна строка на изделие из всех заказов дня: количества и суммы сложены,
+ * метки показывают, из каких заказов она состоит. Меняется через сами заказы.
+ */
+function OrdersRow({ batches }: { batches: DayBatch[] }) {
+  const total = (pick: (b: DayBatch) => number) => batches.reduce((sum, b) => sum + pick(b), 0);
+  const amount = total((b) => b.quantity);
+  const same = (pick: (b: DayBatch) => number) => batches.every((b) => pick(b) === pick(batches[0]));
+  const label = (b: DayBatch) => `${b.orderIsConsignment ? 'Магазин' : 'Заказ'} №${b.orderNumber}`;
+
+  const returned = total((b) => b.orderReturned);
+  const later = [
+    total((b) => b.soldLater) > 0 ? `продано ${quantity(total((b) => b.soldLater))}` : null,
+    total((b) => b.writtenOffLater) > 0 ? `списано ${quantity(total((b) => b.writtenOffLater))}` : null,
+  ].filter(Boolean);
+  const remaining = total((b) => b.remaining);
+
+  return (
+    <Table.Tr className="orders-row">
+      <Table.Td className="name-cell">
+        <Group gap={6} wrap="nowrap">
+          <Text fw={500} size="sm">
+            {batches[0].productName}
+          </Text>
+          <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+            в заказах
+          </Text>
+        </Group>
+        <Group gap={4} mt={3} wrap="wrap">
+          {batches.map((b) => (
+            <Tooltip key={b.id} label={b.fromStock ? 'Взято из готового' : 'Приготовлено под заказ'}>
+              <Badge
+                size="md"
+                variant="light"
+                color={b.orderIsConsignment ? 'grape' : 'blue'}
+                component={Link}
+                to="/orders"
+                style={{ cursor: 'pointer' }}
+              >
+                {label(b)} · {quantity(b.quantity)}
+              </Badge>
+            </Tooltip>
+          ))}
+        </Group>
+        {returned > 0 && (
+          <Text size="xs" c="grape.7">
+            Магазин вернул {quantity(returned)}
+          </Text>
+        )}
+        {later.length > 0 && (
+          <Text size="xs" c="dimmed">
+            Позже: {later.join(', ')}
+          </Text>
+        )}
+      </Table.Td>
+      <Table.Td className="num">
+        <Text span inherit fw={600}>
+          {quantity(amount)}
+        </Text>
+      </Table.Td>
+      <Table.Td className="num">
+        {same((b) => b.unitCost) ? (
+          <Tooltip label={costTooltip(batches[0].unitCostBreakdown)}>
+            <span>{money(batches[0].unitCost)}</span>
+          </Tooltip>
+        ) : (
+          <Tooltip label={batches.map((b) => `${label(b)}: ${money(b.unitCost)}`).join(' · ')}>
+            <span>≈ {money(total((b) => b.totalCost) / amount)}</span>
+          </Tooltip>
+        )}
+      </Table.Td>
+      <Table.Td className="num">
+        {same((b) => b.unitPrice) ? (
+          money(batches[0].unitPrice)
+        ) : (
+          <Tooltip label={batches.map((b) => `${label(b)}: ${money(b.unitPrice)}`).join(' · ')}>
+            <span>≈ {money(total((b) => b.unitPrice * b.quantity) / amount)}</span>
+          </Tooltip>
+        )}
+      </Table.Td>
+      <Table.Td className="num">{quantity(total((b) => b.sold))}</Table.Td>
+      <Table.Td className="num">{quantity(total((b) => b.writtenOff))}</Table.Td>
+      <Table.Td className="num">
+        <Text span inherit fw={remaining > 0 ? 600 : undefined} c={remaining > 0 ? 'orange.8' : 'dimmed'}>
+          {quantity(remaining)}
+        </Text>
+      </Table.Td>
+      <Table.Td className="num">{money(total((b) => b.totalCost))}</Table.Td>
+      <Table.Td className="num">{money(total((b) => b.potentialRevenue))}</Table.Td>
+      <Table.Td className="num">
+        <Profit value={total((b) => b.potentialProfit)} />
+      </Table.Td>
+      <Table.Td className="num">{money(total((b) => b.actualRevenue))}</Table.Td>
+      <Table.Td />
+    </Table.Tr>
   );
 }
 
@@ -622,10 +745,18 @@ function CarryOverTable({
       <Table verticalSpacing={6} horizontalSpacing="xs" highlightOnHover>
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Изделие</Table.Th>
+            <Table.Th className="name-cell">Изделие</Table.Th>
             <Table.Th>Приготовлено</Table.Th>
-            <Table.Th className="num"><span style={{ whiteSpace: 'nowrap' }}>С/с</span> за шт</Table.Th>
-            <Table.Th className="num">Цена за шт</Table.Th>
+            <Table.Th className="num" style={{ whiteSpace: 'nowrap' }}>
+              С/с
+              <br />
+              за шт
+            </Table.Th>
+            <Table.Th className="num" style={{ whiteSpace: 'nowrap' }}>
+              Цена
+              <br />
+              за шт
+            </Table.Th>
             <Table.Th className="num">Было утром</Table.Th>
             <Table.Th className="num">Продано сегодня</Table.Th>
             <Table.Th className="num">Списано сегодня</Table.Th>
@@ -636,7 +767,7 @@ function CarryOverTable({
         </Table.Thead>
         <Table.Tbody>
           {rows.map((batch) => {
-            const locked = false;
+            const locked = batch.orderSaleLocked;
             return (
               <Table.Tr key={batch.id}>
                 <Table.Td className="name-cell">

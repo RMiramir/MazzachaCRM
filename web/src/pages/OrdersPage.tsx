@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useCurrency, useOrders } from '../api/hooks';
 import type { OrderScope } from '../api/types';
-import { OrderActions, OrderEditor, OrderStatusBadge, ShopBadge } from '../components/orders';
+import { OrderActions, OrderEditor, OrderStatusMenu, ShopBadge } from '../components/orders';
 import { EmptyState, Loading, PageHeader, Profit, Section } from '../components/ui';
 import { money, quantity, shortDate, shortTime, today } from '../lib/format';
 
@@ -151,7 +151,7 @@ export function OrdersPage() {
                         )}
                       </Table.Td>
                       <Table.Td>
-                        <OrderStatusBadge order={order} />
+                        <OrderStatusMenu order={order} actionDate={today()} />
                       </Table.Td>
                       <Table.Td>
                         <OrderActions order={order} actionDate={today()} compact />
