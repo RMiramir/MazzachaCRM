@@ -2,6 +2,7 @@ using FluentValidation;
 using MazzachaCRM.Application.Abstractions;
 using MazzachaCRM.Application.Common;
 using MazzachaCRM.Domain.Common;
+using MazzachaCRM.Domain.Orders;
 using MazzachaCRM.Domain.Production;
 using Microsoft.EntityFrameworkCore;
 
@@ -151,14 +152,14 @@ public sealed class SetBatchSalesValidator : AbstractValidator<SetBatchSalesComm
     }
 }
 
-public sealed class SetBatchSalesHandler(IProductionBatchRepository batches)
+public sealed class SetBatchSalesHandler(IProductionBatchRepository batches, IOrderRepository orders)
     : ICommandHandler<SetBatchSalesCommand, Unit>
 {
     public async Task<Unit> Handle(SetBatchSalesCommand command, CancellationToken ct)
     {
         var batch = await batches.GetByIdAsync(command.BatchId, ct)
             ?? throw new NotFoundException("Строка не найдена.");
-        BatchRules.EnsureNotOrderDay(batch, command.Date);
+        await BatchRules.EnsureManualEntryAllowedAsync(batch, command.Date, orders, ct);
 
         batch.SetSalesForDate(command.Date, command.Entries.Select(e => new SaleEntry(e.Quantity, e.UnitPrice)));
         return Unit.Value;
@@ -179,14 +180,14 @@ public sealed class SetBatchWriteOffValidator : AbstractValidator<SetBatchWriteO
     }
 }
 
-public sealed class SetBatchWriteOffHandler(IProductionBatchRepository batches)
+public sealed class SetBatchWriteOffHandler(IProductionBatchRepository batches, IOrderRepository orders)
     : ICommandHandler<SetBatchWriteOffCommand, Unit>
 {
     public async Task<Unit> Handle(SetBatchWriteOffCommand command, CancellationToken ct)
     {
         var batch = await batches.GetByIdAsync(command.BatchId, ct)
             ?? throw new NotFoundException("Строка не найдена.");
-        BatchRules.EnsureNotOrderDay(batch, command.Date);
+        await BatchRules.EnsureManualEntryAllowedAsync(batch, command.Date, orders, ct);
 
         batch.SetWriteOffForDate(command.Date, command.Quantity, command.Reason);
         return Unit.Value;
@@ -244,12 +245,21 @@ internal static class BatchRules
     }
 
     /// <summary>
-    /// Продажа по заказу записана в день готовности и меняется только через заказ.
-    /// Остаток, который вернул магазин, в другие дни продаётся и списывается как обычно.
+    /// Продажа по заказу записывается в день его готовности и меняется только через заказ.
+    /// Остаток, который вернул магазин, в следующие дни продаётся и списывается как обычно.
     /// </summary>
-    public static void EnsureNotOrderDay(ProductionBatch batch, DateOnly date)
+    public static async Task EnsureManualEntryAllowedAsync(
+        ProductionBatch batch, DateOnly date, IOrderRepository orders, CancellationToken ct)
     {
-        if (batch.OrderId is not null && date == batch.ProductionDate)
+        if (batch.OrderId is not { } orderId)
+            return;
+
+        var order = await orders.GetByIdAsync(orderId, ct);
+        if (order?.ProducedDate is not { } readyDate)
+            throw new DomainException(
+                "Эти изделия закреплены за заказом. Продажа запишется сама, когда заказ будет готов.");
+
+        if (date <= readyDate)
             throw new DomainException(
                 "В день готовности продажа по заказу записывается автоматически. Если магазин что-то вернул, внесите отчёт магазина в заказе.");
     }

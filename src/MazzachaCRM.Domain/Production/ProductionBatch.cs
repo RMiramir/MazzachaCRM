@@ -71,6 +71,18 @@ public sealed class ProductionBatch : AggregateRoot
     /// <summary>Позиция заказа, под которую изготовлена партия.</summary>
     public Guid? OrderItemId { get; private set; }
 
+    /// <summary>
+    /// Изделия не пекли под заказ, а взяли из уже готовых. При возврате заказа в работу
+    /// такая партия остаётся закреплённой, а не удаляется.
+    /// </summary>
+    public bool ReservedFromStock { get; private set; }
+
+    /// <summary>Свободная партия, от которой отделили эти изделия для заказа.</summary>
+    public Guid? SplitFromBatchId { get; private set; }
+
+    /// <summary>Цена витрины до закрепления за заказом: возвращается, если заказ отменят.</summary>
+    public decimal? PriceBeforeOrder { get; private set; }
+
     /// <summary>День, когда остаток стал нулевым. Пусто, пока в партии что-то осталось.</summary>
     public DateOnly? ClosedOn { get; private set; }
 
@@ -190,6 +202,76 @@ public sealed class ProductionBatch : AggregateRoot
     {
         OrderId = null;
         OrderItemId = null;
+
+        // Взятое из готового возвращается на витрину по прежней цене.
+        if (ReservedFromStock)
+            UnitPrice = PriceBeforeOrder ?? UnitPrice;
+        ReservedFromStock = false;
+        PriceBeforeOrder = null;
+    }
+
+    /// <summary>
+    /// Закрепляет готовые изделия за позицией заказа. Если берётся вся партия, она целиком
+    /// переходит к заказу; иначе от неё отделяется новая партия с той же датой и себестоимостью,
+    /// а здесь остаётся свободный остаток. Возвращает партию, которая теперь принадлежит заказу.
+    /// </summary>
+    public ProductionBatch ReserveForOrder(decimal quantity, Guid orderId, Guid orderItemId, decimal unitPrice)
+    {
+        if (OrderId is not null)
+            throw new DomainException("Эти изделия уже закреплены за заказом.");
+        Guard.Positive(quantity, "Количество");
+        Guard.NotNegative(unitPrice, "Цена");
+        if (quantity > RemainingQuantity)
+            throw new DomainException($"Свободно только {RemainingQuantity:0.###} шт, а в заказе указано {quantity:0.###}.");
+
+        if (quantity == Quantity)
+        {
+            PriceBeforeOrder = UnitPrice;
+            UnitPrice = unitPrice;
+            OrderId = orderId;
+            OrderItemId = orderItemId;
+            ReservedFromStock = true;
+            return this;
+        }
+
+        Quantity -= quantity;
+        RefreshClosedOn();
+
+        return new ProductionBatch
+        {
+            ProductionDate = ProductionDate,
+            ProductId = ProductId,
+            Quantity = quantity,
+            UnitCostIngredients = UnitCostIngredients,
+            UnitCostPackaging = UnitCostPackaging,
+            UnitCostLabor = UnitCostLabor,
+            UnitPrice = unitPrice,
+            OrderId = orderId,
+            OrderItemId = orderItemId,
+            ReservedFromStock = true,
+            SplitFromBatchId = SplitFromBatchId ?? Id,
+            PriceBeforeOrder = UnitPrice,
+            CreatedAt = DateTime.UtcNow,
+        };
+    }
+
+    /// <summary>Можно ли вернуть отделённые изделия обратно в эту партию одной строкой.</summary>
+    public bool CanAbsorb(ProductionBatch part) =>
+        OrderId is null &&
+        part.OrderId is null &&
+        part.SplitFromBatchId == Id &&
+        part.ProductionDate == ProductionDate &&
+        part.UnitCostBreakdown == UnitCostBreakdown &&
+        part._sales.Count == 0 &&
+        part._writeOffs.Count == 0;
+
+    /// <summary>Возвращает в партию изделия, которые отделяли для заказа.</summary>
+    public void Absorb(ProductionBatch part)
+    {
+        if (!CanAbsorb(part))
+            throw new DomainException("Эти изделия нельзя вернуть в исходную строку.");
+        Quantity += part.Quantity;
+        RefreshClosedOn();
     }
 
     public decimal SoldOn(DateOnly date) => _sales.Where(s => s.Date == date).Sum(s => s.Quantity);

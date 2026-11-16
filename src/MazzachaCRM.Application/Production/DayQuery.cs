@@ -35,7 +35,8 @@ public sealed record DayBatchDto(
     Guid? OrderId,
     int? OrderNumber,
     bool OrderIsConsignment,
-    decimal OrderReturned);
+    decimal OrderReturned,
+    bool FromStock);
 
 /// <summary>Остаток прошлых дней, который можно продать или списать сегодня.</summary>
 public sealed record DayCarryOverDto(
@@ -55,7 +56,8 @@ public sealed record DayCarryOverDto(
     string? WriteOffReason,
     Guid? OrderId,
     int? OrderNumber,
-    bool OrderIsConsignment);
+    bool OrderIsConsignment,
+    bool OrderSaleLocked);
 
 public sealed record DaySummaryDto(
     decimal ProductionCost,
@@ -131,7 +133,13 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
             .Where(p => p.Date == date)
             .ToListAsync(ct);
 
-        var today = batches.Where(b => b.ProductionDate == date).OrderBy(b => b.OrderId != null).ThenBy(b => b.CreatedAt).ToList();
+        // Одинаковые изделия идут рядом: сначала свободные (витрина), затем закреплённые за заказами.
+        var today = batches
+            .Where(b => b.ProductionDate == date)
+            .OrderBy(b => Name(b.ProductId), StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(b => b.OrderId != null)
+            .ThenBy(b => b.CreatedAt)
+            .ToList();
         var carryOver = batches
             .Where(b => b.ProductionDate < date && b.RemainingAtStartOf(date) > 0)
             .OrderBy(b => b.ProductionDate)
@@ -149,7 +157,7 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
         // Продажа заказа в день готовности — это ещё не деньги, они придут оплатой.
         var receivedFromOrders = payments.Sum(p => p.Amount);
         var cashSales = all.Sum(b => b.Sales
-            .Where(s => s.Date == date && !(b.OrderId != null && s.Date == b.ProductionDate))
+            .Where(s => s.Date == date && !IsOrderSale(b, s.Date))
             .Sum(s => s.Amount));
 
         // Фактическая прибыль: проданное минус его себестоимость, списанное в этот день и расходы дня.
@@ -197,6 +205,13 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
         Order? OrderOf(ProductionBatch b) =>
             b.OrderId is { } id && ordersById.TryGetValue(id, out var order) ? order : null;
 
+        // Продажа, которую записал заказ в день своей готовности: это долг клиента, а не деньги на руках.
+        bool IsOrderSale(ProductionBatch b, DateOnly saleDate) => OrderOf(b)?.ProducedDate == saleDate;
+
+        // Пока заказ не готов и в день его готовности продажи и списания ведёт сам заказ.
+        bool OrderSaleLocked(ProductionBatch b) =>
+            b.OrderId is not null && !(OrderOf(b)?.ProducedDate is { } readyDate && date > readyDate);
+
         bool IsShop(ProductionBatch b) => OrderOf(b) is { } order && consignment.Contains(order.CustomerId);
 
         decimal Returned(ProductionBatch b) =>
@@ -236,7 +251,8 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
                 b.OrderId,
                 OrderOf(b)?.Number,
                 IsShop(b),
-                Returned(b));
+                Returned(b),
+                b.ReservedFromStock);
         }
 
         DayCarryOverDto ToCarryOverRow(ProductionBatch b)
@@ -260,7 +276,8 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
                 b.WriteOffs.FirstOrDefault(w => w.Date == date)?.Reason,
                 b.OrderId,
                 OrderOf(b)?.Number,
-                IsShop(b));
+                IsShop(b),
+                OrderSaleLocked(b));
         }
     }
 }

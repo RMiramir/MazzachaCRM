@@ -94,6 +94,13 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
 
         var expenses = await db.Expenses.Where(e => e.Date >= from && e.Date <= to).ToListAsync(ct);
         var productNames = await db.Products.ToDictionaryAsync(p => p.Id, p => p.Name, ct);
+
+        // День готовности каждого заказа: продажа в этот день — долг клиента, а не полученные деньги.
+        var readyDates = (await db.Orders
+                .Where(o => o.ProducedDate != null)
+                .Select(o => new { o.Id, o.ProducedDate })
+                .ToListAsync(ct))
+            .ToDictionary(o => o.Id, o => o.ProducedDate);
         var payments = await db.Orders
             .SelectMany(o => o.Payments)
             .Where(p => p.Date >= from && p.Date <= to)
@@ -121,7 +128,7 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
                 day.Revenue += sale.Amount;
                 day.ProfitOnSold += sale.Amount - costOfSold;
                 // Продажа заказа в день готовности — это долг клиента, деньги придут оплатой.
-                if (!(batch.OrderId != null && sale.Date == batch.ProductionDate))
+                if (!(batch.OrderId is { } orderId && readyDates.GetValueOrDefault(orderId) == sale.Date))
                     day.Received += sale.Amount;
                 product.Sold += sale.Quantity;
                 product.Revenue += sale.Amount;

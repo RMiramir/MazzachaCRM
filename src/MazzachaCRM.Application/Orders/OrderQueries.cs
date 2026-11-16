@@ -18,7 +18,8 @@ public sealed record OrderItemDto(
     decimal Sold,
     decimal UnitPrice,
     decimal Amount,
-    string? Note);
+    string? Note,
+    Guid? ReservedBatchId);
 
 public sealed record OrderPaymentDto(Guid Id, DateOnly Date, decimal Amount, string? Note);
 
@@ -159,7 +160,8 @@ internal sealed class OrderMapper
                 i.SoldQuantity,
                 i.UnitPrice.Precise(),
                 i.Amount.Money(),
-                i.Note))
+                i.Note,
+                BatchOf(order, i) is { ReservedFromStock: true } reserved ? reserved.Id : null))
             .ToList();
 
         var payments = order.Payments
@@ -193,22 +195,30 @@ internal sealed class OrderMapper
             cost is { } value ? (order.Total - value).Money() : null);
     }
 
-    /// <summary>Сколько возврата списано сразу, в день отправки.</summary>
-    private decimal ReturnedWrittenOff(Order order, OrderItem item)
-    {
-        var batch = _batchesByOrder[order.Id].FirstOrDefault(b => b.OrderItemId == item.Id);
-        return batch?.WrittenOffOn(batch.ProductionDate) ?? 0;
-    }
+    private ProductionBatch? BatchOf(Order order, OrderItem item) =>
+        _batchesByOrder[order.Id].FirstOrDefault(b => b.OrderItemId == item.Id);
 
+    /// <summary>Сколько возврата списано сразу, в день готовности заказа.</summary>
+    private decimal ReturnedWrittenOff(Order order, OrderItem item) =>
+        order.ProducedDate is { } readyDate && BatchOf(order, item) is { } batch ? batch.WrittenOffOn(readyDate) : 0;
+
+    /// <summary>
+    /// Себестоимость заказа: по партии, если позиция уже изготовлена или взята из готового,
+    /// иначе по текущему составу изделия.
+    /// </summary>
     private decimal? Cost(Order order)
     {
         var batches = _batchesByOrder[order.Id].ToList();
-        if (batches.Count > 0)
+        var legacy = batches.Where(b => b.OrderItemId == null).ToList();
+        if (legacy.Count > 0)
             return batches.Sum(b => b.TotalCost);
 
         try
         {
-            return order.Items.Sum(i => _context.Calculator.UnitCost(i.ProductId).Total * i.Quantity);
+            return order.Items.Sum(i =>
+                BatchOf(order, i) is { } batch
+                    ? batch.TotalCost
+                    : _context.Calculator.UnitCost(i.ProductId).Total * i.Quantity);
         }
         catch (DomainException)
         {

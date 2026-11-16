@@ -20,6 +20,9 @@ public static class DayEndpoints
 
         var batches = api.MapGroup("/batches").WithTags("День");
 
+        batches.MapGet("/free", (Guid? forOrderId, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.Query(new GetFreeStockQuery(forOrderId), ct));
+
         batches.MapPost("/", async (CreateBatchCommand command, IDispatcher dispatcher, CancellationToken ct) =>
             Results.Ok(new { id = await dispatcher.Send(command, ct) }));
 

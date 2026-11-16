@@ -10,7 +10,10 @@ using MazzachaCRM.Domain.Products;
 
 namespace MazzachaCRM.Application.Orders;
 
-public sealed record OrderItemInput(Guid ProductId, decimal Quantity, decimal UnitPrice, string? Note)
+/// <param name="FromBatchId">
+/// Свободная строка дня, из которой взять готовые изделия. Пусто — изделие приготовят под заказ.
+/// </param>
+public sealed record OrderItemInput(Guid ProductId, decimal Quantity, decimal UnitPrice, string? Note, Guid? FromBatchId = null)
 {
     public OrderItemSpec ToSpec() => new(ProductId, Quantity, UnitPrice, Note);
 }
@@ -28,6 +31,26 @@ public sealed class OrderItemInputValidator : AbstractValidator<OrderItemInput>
 
 internal static class OrderRules
 {
+    /// <summary>Закрепляет готовые изделия за теми позициями, где это указано. Позиции идут в том же порядке, что и во вводе.</summary>
+    public static async Task ReserveFromStockAsync(
+        OrderStockService stock, Order order, IReadOnlyList<OrderItemInput> inputs, CancellationToken ct)
+    {
+        var items = order.Items.ToList();
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (inputs[index].FromBatchId is { } batchId)
+                await stock.ReserveAsync(order, items[index], batchId, ct);
+        }
+    }
+
+    /// <summary>Снимает с партии продажу и списание, которые записал заказ в день готовности.</summary>
+    public static void ClearOrderEntries(ProductionBatch batch, DateOnly? producedDate)
+    {
+        batch.ClearSales();
+        if (producedDate is { } date && date >= batch.ProductionDate)
+            batch.SetWriteOffForDate(date, 0, null);
+    }
+
     /// <summary>В заказ можно добавить только существующие готовые изделия.</summary>
     public static async Task EnsureSellableAsync(
         IProductRepository products, IEnumerable<OrderItemInput> items, CancellationToken ct)
@@ -75,7 +98,8 @@ public sealed class CreateOrderValidator : AbstractValidator<CreateOrderCommand>
 public sealed class CreateOrderHandler(
     IOrderRepository orders,
     ICustomerRepository customers,
-    IProductRepository products)
+    IProductRepository products,
+    OrderStockService stock)
     : ICommandHandler<CreateOrderCommand, Guid>
 {
     public async Task<Guid> Handle(CreateOrderCommand command, CancellationToken ct)
@@ -108,6 +132,7 @@ public sealed class CreateOrderHandler(
             order.AddPayment(DateOnly.FromDateTime(DateTime.Now), command.Prepayment, "Предоплата");
 
         orders.Add(order);
+        await OrderRules.ReserveFromStockAsync(stock, order, command.Items, ct);
         return order.Id;
     }
 }
@@ -136,7 +161,9 @@ public sealed class UpdateOrderValidator : AbstractValidator<UpdateOrderCommand>
 public sealed class UpdateOrderHandler(
     IOrderRepository orders,
     ICustomerRepository customers,
-    IProductRepository products)
+    IProductRepository products,
+    IProductionBatchRepository batches,
+    OrderStockService stock)
     : ICommandHandler<UpdateOrderCommand, Unit>
 {
     public async Task<Unit> Handle(UpdateOrderCommand command, CancellationToken ct)
@@ -149,10 +176,25 @@ public sealed class UpdateOrderHandler(
         order.UpdateDetails(command.CustomerId, command.DueDate, command.DueTime, command.Note);
 
         var specs = command.Items.Select(i => i.ToSpec()).ToList();
-        if (!order.HasSameItems(specs))
+        var orderBatches = await batches.ListByOrderAsync(order.Id, ct);
+
+        // Откуда сейчас взята каждая позиция: закреплённая партия или «приготовить».
+        var reserved = orderBatches.Where(b => b.ReservedFromStock).ToList();
+        var currentSources = order.Items
+            .Select(item => reserved.FirstOrDefault(b => b.OrderItemId == item.Id)?.Id)
+            .ToList();
+        var newSources = command.Items.Select(i => i.FromBatchId).ToList();
+
+        if (!order.HasSameItems(specs) || !currentSources.SequenceEqual(newSources))
         {
             await OrderRules.EnsureSellableAsync(products, command.Items, ct);
+
+            // Сначала всё закреплённое возвращается на витрину, затем закрепляется заново по новому составу.
+            foreach (var batch in reserved)
+                batch.ReleaseFromOrder();
             order.SetItems(specs);
+            await OrderRules.ReserveFromStockAsync(stock, order, command.Items, ct);
+            await stock.MergeBackAsync(reserved, ct);
         }
 
         return Unit.Value;
@@ -173,15 +215,17 @@ public sealed class ChangeOrderStatusValidator : AbstractValidator<ChangeOrderSt
 
 /// <summary>
 /// Приводит партии заказа в соответствие со статусом:
-/// «Готов» — партии изготовлены в указанный день, сырьё списано, выручка записана в тот же день;
-/// «Выдан» — только отметка; возврат в работу — партии удалены, сырьё возвращено;
-/// отмена — изготовленное остаётся обычным остатком, который можно продать или списать.
+/// «Готов» — недостающее изготовлено в указанный день, сырьё списано, выручка записана в тот же день;
+/// «Выдан» — только отметка; возврат в работу — испечённое под заказ удалено, сырьё возвращено,
+/// а взятое из готового остаётся закреплённым; отмена — изготовленное остаётся обычным остатком,
+/// взятое из готового возвращается на витрину.
 /// </summary>
 public sealed class ChangeOrderStatusHandler(
     IOrderRepository orders,
     IProductionBatchRepository batches,
     CostingContextLoader costing,
-    BatchProductionService production)
+    BatchProductionService production,
+    OrderStockService stock)
     : ICommandHandler<ChangeOrderStatusCommand, Unit>
 {
     public async Task<Unit> Handle(ChangeOrderStatusCommand command, CancellationToken ct)
@@ -192,6 +236,7 @@ public sealed class ChangeOrderStatusHandler(
         if (order.Status == command.Status)
             return Unit.Value;
 
+        var previousProducedDate = order.ProducedDate;
         order.ChangeStatus(command.Status, command.Date);
         var orderBatches = await batches.ListByOrderAsync(order.Id, ct);
 
@@ -200,34 +245,40 @@ public sealed class ChangeOrderStatusHandler(
             case OrderStatus.Cancelled:
                 foreach (var batch in orderBatches)
                 {
-                    batch.ClearSales();
-                    batch.SetWriteOffForDate(batch.ProductionDate, 0, null);
+                    OrderRules.ClearOrderEntries(batch, previousProducedDate);
                     batch.ReleaseFromOrder();
                 }
 
+                await stock.MergeBackAsync(orderBatches, ct);
                 break;
 
             case OrderStatus.New or OrderStatus.InProgress:
-                if (orderBatches.Count > 0)
+                CostingContext? context = null;
+                foreach (var batch in orderBatches)
                 {
-                    var context = await costing.LoadTrackedAsync(ct);
-                    foreach (var batch in orderBatches)
-                    {
-                        await production.RevertConsumptionAsync(context, batch.Id, ct);
-                        batches.Remove(batch);
-                    }
+                    OrderRules.ClearOrderEntries(batch, previousProducedDate);
+                    if (batch.ReservedFromStock)
+                        continue;
+
+                    context ??= await costing.LoadTrackedAsync(ct);
+                    await production.RevertConsumptionAsync(context, batch.Id, ct);
+                    batches.Remove(batch);
                 }
 
                 break;
 
             case OrderStatus.Ready or OrderStatus.Delivered:
-                if (orderBatches.Count == 0)
+                // Печём только то, что не взято из готового и ещё не изготовлено.
+                var covered = OrderSales.Match(order, orderBatches).Select(pair => pair.Item.Id).ToHashSet();
+                var missing = order.Items.Where(item => !covered.Contains(item.Id)).ToList();
+                if (missing.Count > 0)
                 {
-                    var context = await costing.LoadTrackedAsync(ct);
-                    orderBatches = order.Items
-                        .Select(item => production.Produce(
-                            context, order.ProducedDate!.Value, item.ProductId, item.Quantity, item.UnitPrice, order.Id, item.Id))
-                        .ToList();
+                    var costingContext = await costing.LoadTrackedAsync(ct);
+                    foreach (var item in missing)
+                    {
+                        orderBatches.Add(production.Produce(
+                            costingContext, order.ProducedDate!.Value, item.ProductId, item.Quantity, item.UnitPrice, order.Id, item.Id));
+                    }
                 }
 
                 OrderSales.Apply(order, orderBatches);
@@ -238,16 +289,24 @@ public sealed class ChangeOrderStatusHandler(
     }
 }
 
-/// <summary>Продажа по заказу записывается в день готовности: за всё, кроме возвращённого магазином.</summary>
+/// <summary>
+/// Продажа по заказу записывается в день готовности заказа: за всё, кроме возвращённого магазином.
+/// Для изделий, взятых из готового, это может быть позже дня, когда их пекли.
+/// </summary>
 internal static class OrderSales
 {
     public static void Apply(Order order, IReadOnlyCollection<ProductionBatch> orderBatches)
     {
+        var date = order.ProducedDate
+            ?? throw new DomainException("Заказ ещё не готов: продажу записывать рано.");
+
         foreach (var (batch, item) in Match(order, orderBatches))
         {
-            batch.SetSalesForDate(
-                batch.ProductionDate,
-                item.SoldQuantity > 0 ? [new SaleEntry(item.SoldQuantity, item.UnitPrice)] : []);
+            if (date < batch.ProductionDate)
+                throw new DomainException(
+                    "День готовности заказа не может быть раньше дня, когда приготовили изделия, взятые из готового.");
+
+            batch.SetSalesForDate(date, item.SoldQuantity > 0 ? [new SaleEntry(item.SoldQuantity, item.UnitPrice)] : []);
         }
     }
 
@@ -368,15 +427,16 @@ public sealed class SubmitShopReportHandler(IOrderRepository orders, IProduction
 
         order.RecordReturns(command.Date, returned);
 
+        var readyDate = order.ProducedDate!.Value;
         var orderBatches = await batches.ListByOrderAsync(order.Id, ct);
         foreach (var (batch, item) in OrderSales.Match(order, orderBatches))
         {
             // Сначала убираем прежнее списание, чтобы оно не мешало пересчитать продажу.
-            batch.SetWriteOffForDate(batch.ProductionDate, 0, null);
+            batch.SetWriteOffForDate(readyDate, 0, null);
             batch.SetSalesForDate(
-                batch.ProductionDate,
+                readyDate,
                 item.SoldQuantity > 0 ? [new SaleEntry(item.SoldQuantity, item.UnitPrice)] : []);
-            batch.SetWriteOffForDate(batch.ProductionDate, writeOffs.GetValueOrDefault(item.Id), "Возврат, списан сразу");
+            batch.SetWriteOffForDate(readyDate, writeOffs.GetValueOrDefault(item.Id), "Возврат, списан сразу");
         }
 
         return Unit.Value;
@@ -416,7 +476,11 @@ public sealed class RepeatOrderHandler(IOrderRepository orders, IProductReposito
 
 public sealed record DeleteOrderCommand(Guid Id) : ICommand<Unit>;
 
-public sealed class DeleteOrderHandler(IOrderRepository orders) : ICommandHandler<DeleteOrderCommand, Unit>
+public sealed class DeleteOrderHandler(
+    IOrderRepository orders,
+    IProductionBatchRepository batches,
+    OrderStockService stock)
+    : ICommandHandler<DeleteOrderCommand, Unit>
 {
     public async Task<Unit> Handle(DeleteOrderCommand command, CancellationToken ct)
     {
@@ -427,6 +491,15 @@ public sealed class DeleteOrderHandler(IOrderRepository orders) : ICommandHandle
             throw new DomainException(
                 "Заказ уже изготовлен. Чтобы удалить его, сначала отмените заказ или верните его в работу.");
 
+        // Готовые изделия, закреплённые за заказом, возвращаются на витрину.
+        var orderBatches = await batches.ListByOrderAsync(order.Id, ct);
+        foreach (var batch in orderBatches)
+        {
+            batch.ClearSales();
+            batch.ReleaseFromOrder();
+        }
+
+        await stock.MergeBackAsync(orderBatches, ct);
         orders.Remove(order);
         return Unit.Value;
     }

@@ -34,6 +34,23 @@ public sealed class StockMovement : AggregateRoot
     public string? Note { get; private set; }
     public DateTime CreatedAt { get; private set; }
 
+    /// <summary>
+    /// Отдаёт долю расхода другой партии, когда часть изделий отделяют под заказ.
+    /// Остаток на складе не меняется: то же сырьё просто числится за двумя партиями.
+    /// </summary>
+    public StockMovement SplitForBatch(decimal share, Guid batchId)
+    {
+        if (share <= 0 || share >= 1)
+            throw new DomainException("Доля должна быть больше нуля и меньше единицы.");
+
+        var part = Quantity * share;
+        Quantity -= part;
+        return Create(IngredientId, Date, Type, part, null, batchId, Note);
+    }
+
+    /// <summary>Переносит расход на другую партию, когда изделия возвращают в исходную строку.</summary>
+    public void MoveToBatch(Guid batchId) => BatchId = batchId;
+
     internal static StockMovement Create(
         Guid ingredientId,
         DateOnly date,

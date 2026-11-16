@@ -322,6 +322,9 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("OrderItemId")
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal?>("PriceBeforeOrder")
+                        .HasColumnType("TEXT");
+
                     b.Property<Guid>("ProductId")
                         .HasColumnType("TEXT");
 
@@ -329,6 +332,12 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<decimal>("Quantity")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("ReservedFromStock")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid?>("SplitFromBatchId")
                         .HasColumnType("TEXT");
 
                     b.Property<decimal>("UnitCostIngredients")
