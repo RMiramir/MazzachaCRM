@@ -169,7 +169,9 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
         var expensesTotal = days.Values.Sum(d => d.Expenses);
         var revenue = days.Values.Sum(d => d.Revenue);
         var profit = revenue - productionCost - expensesTotal;
-        var unsoldAtPrice = batches.Sum(b => b.RemainingAtEndOf(to) * b.UnitPrice);
+        // Непроданное на конец периода — только то, что перенесено на его последний день: остальное уже убыток.
+        var unsold = batches.Where(b => b.IsAvailableOn(to)).ToList();
+        var unsoldAtPrice = unsold.Sum(b => b.RemainingAtEndOf(to) * b.UnitPrice);
 
         var totals = new PeriodTotalsDto(
             productionCost.Money(),
@@ -181,7 +183,7 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
             days.Values.Sum(d => d.ProfitOnSold).Money(),
             days.Values.Sum(d => d.WriteOffLoss).Money(),
             unsoldAtPrice.Money(),
-            batches.Sum(b => b.RemainingAtEndOf(to) * b.UnitCost).Money(),
+            unsold.Sum(b => b.RemainingAtEndOf(to) * b.UnitCost).Money(),
             (profit + unsoldAtPrice).Money(),
             days.Values.Sum(d => d.Received).Money());
 

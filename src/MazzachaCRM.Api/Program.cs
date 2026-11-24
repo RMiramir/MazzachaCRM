@@ -5,6 +5,7 @@ using MazzachaCRM.Api.Endpoints;
 using MazzachaCRM.Application;
 using MazzachaCRM.Infrastructure;
 using MazzachaCRM.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Routing;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -47,8 +48,19 @@ using (var scope = app.Services.CreateScope())
 app.Logger.LogInformation("База данных: {Path}", Path.GetFullPath(databasePath));
 
 app.UseExceptionHandler();
+// Страница интерфейса не кэшируется: после обновления программы браузер сразу берёт новую версию.
+// Файлы скриптов и стилей можно кэшировать — у каждой сборки у них новые имена.
+var noCacheForPages = new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        if (context.File.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+            context.Context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+    },
+};
+
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(noCacheForPages);
 
 app.MapOpenApi();
 
@@ -64,7 +76,7 @@ api.MapReportEndpoints();
 api.MapFallback(() => Results.Problem(statusCode: StatusCodes.Status404NotFound, title: "Не найдено"));
 
 // Всё остальное отдаёт фронтенд (маршрутизация на стороне браузера).
-app.MapFallbackToFile("index.html");
+app.MapFallbackToFile("index.html", noCacheForPages);
 
 if (args.Contains("--open-browser"))
 {
@@ -82,6 +94,17 @@ if (args.Contains("--open-browser"))
     });
 }
 
-app.Run();
+try
+{
+    app.Run();
+}
+catch (IOException exception) when (exception.InnerException is AddressInUseException || exception.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase))
+{
+    // Чаще всего это старое окно программы: браузер тогда показывает старую версию.
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("Адрес уже занят: программа, скорее всего, уже запущена в другом окне.");
+    Console.Error.WriteLine("Закройте старое окно программы и запустите её снова.");
+    Environment.ExitCode = 1;
+}
 
 public partial class Program;

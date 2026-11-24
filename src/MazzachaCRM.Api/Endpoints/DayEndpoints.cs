@@ -20,8 +20,20 @@ public static class DayEndpoints
 
         var batches = api.MapGroup("/batches").WithTags("День");
 
-        batches.MapGet("/free", (Guid? forOrderId, IDispatcher dispatcher, CancellationToken ct) =>
-            dispatcher.Query(new GetFreeStockQuery(forOrderId), ct));
+        batches.MapGet("/free", (Guid? forOrderId, DateOnly? date, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.Query(new GetFreeStockQuery(forOrderId, date), ct));
+
+        batches.MapPost("/carry", async (CarryLeftoversCommand command, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Ok(new { count = await dispatcher.Send(command, ct) }));
+
+        batches.MapPost("/write-off-leftovers", async (WriteOffLeftoversCommand command, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Ok(new { count = await dispatcher.Send(command, ct) }));
+
+        batches.MapPost("/{id:guid}/cancel-carry", async (Guid id, CancelCarryRequest request, IDispatcher dispatcher, CancellationToken ct) =>
+        {
+            await dispatcher.Send(new CancelCarryCommand(id, request.LastDay), ct);
+            return Results.NoContent();
+        });
 
         batches.MapPost("/", async (CreateBatchCommand command, IDispatcher dispatcher, CancellationToken ct) =>
             Results.Ok(new { id = await dispatcher.Send(command, ct) }));
@@ -91,4 +103,6 @@ public static class DayEndpoints
     public sealed record SalesRequest(IReadOnlyList<SaleEntryInput>? Entries);
 
     public sealed record WriteOffRequest(decimal Quantity, string? Reason);
+
+    public sealed record CancelCarryRequest(DateOnly LastDay);
 }

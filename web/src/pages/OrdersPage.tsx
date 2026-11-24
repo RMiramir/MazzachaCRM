@@ -88,10 +88,16 @@ export function OrdersPage() {
                             срок прошёл
                           </Text>
                         )}
-                        {order.producedDate && (
+                        {order.producedDate ? (
                           <Text size="xs" c="dimmed">
                             готов {shortDate(order.producedDate)}
                           </Text>
+                        ) : (
+                          order.productionDate !== order.dueDate && (
+                            <Text size="xs" c="dimmed">
+                              готовим {shortDate(order.productionDate)}
+                            </Text>
+                          )
                         )}
                       </Table.Td>
                       <Table.Td>
@@ -151,7 +157,7 @@ export function OrdersPage() {
                         )}
                       </Table.Td>
                       <Table.Td>
-                        <OrderStatusMenu order={order} actionDate={today()} />
+                        <OrderStatusMenu order={order} />
                       </Table.Td>
                       <Table.Td>
                         <OrderActions order={order} actionDate={today()} compact />

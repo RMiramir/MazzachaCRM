@@ -17,17 +17,23 @@ public sealed record FreeStockDto(
 /// <param name="ForOrderId">
 /// Заказ, который сейчас редактируют: то, что за ним уже закреплено, тоже доступно для выбора.
 /// </param>
-public sealed record GetFreeStockQuery(Guid? ForOrderId) : IQuery<IReadOnlyList<FreeStockDto>>;
+/// <param name="Date">
+/// День приготовления заказа: подходят изделия этого дня и остатки, перенесённые на него.
+/// </param>
+public sealed record GetFreeStockQuery(Guid? ForOrderId, DateOnly? Date = null) : IQuery<IReadOnlyList<FreeStockDto>>;
 
 public sealed class GetFreeStockHandler(IReadDbContext db) : IQueryHandler<GetFreeStockQuery, IReadOnlyList<FreeStockDto>>
 {
     public async Task<IReadOnlyList<FreeStockDto>> Handle(GetFreeStockQuery query, CancellationToken ct)
     {
-        var free = await db.Batches
+        var batches = db.Batches
             .Include(b => b.Sales)
             .Include(b => b.WriteOffs)
-            .Where(b => b.OrderId == null && b.ClosedOn == null)
-            .ToListAsync(ct);
+            .Where(b => b.OrderId == null && b.ClosedOn == null);
+        if (query.Date is { } date)
+            batches = batches.Where(b => b.ProductionDate == date ||
+                                         (b.ProductionDate < date && b.CarriedUntil != null && b.CarriedUntil >= date));
+        var free = await batches.ToListAsync(ct);
 
         var rows = free
             .Where(b => b.RemainingQuantity > 0)

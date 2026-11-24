@@ -132,7 +132,11 @@ export const api = {
       post<Created>('/batches', body),
     update: ({ id, ...body }: { id: string; quantity: number; unitPrice: number }) => put<void>(`/batches/${id}`, body),
     remove: (id: string) => del<void>(`/batches/${id}`),
-    free: (forOrderId: string | null) => get<FreeStock[]>(`/batches/free${query({ forOrderId })}`),
+    free: (forOrderId: string | null, date: string | null) => get<FreeStock[]>(`/batches/free${query({ forOrderId, date })}`),
+    carry: (body: { batchIds: string[]; toDate: string }) => post<{ count: number }>('/batches/carry', body),
+    cancelCarry: ({ id, lastDay }: { id: string; lastDay: string }) => post<void>(`/batches/${id}/cancel-carry`, { lastDay }),
+    writeOffLeftovers: (body: { batchIds: string[]; reason: string | null }) =>
+      post<{ count: number }>('/batches/write-off-leftovers', body),
     recalculateCost: (id: string) => post<void>(`/batches/${id}/recalculate-cost`),
     setSales: ({ id, date, entries }: { id: string; date: string; entries: SaleEntry[] }) =>
       put<void>(`/batches/${id}/sales/${date}`, { entries }),

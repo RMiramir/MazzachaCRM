@@ -10,6 +10,7 @@ import {
   IconSettings,
   IconUsers,
 } from '@tabler/icons-react';
+import dayjs from 'dayjs';
 import type { ReactNode } from 'react';
 import { Navigate, NavLink as RouterLink, Route, Routes, useLocation } from 'react-router-dom';
 import { useIngredients, useOrders, useSettings } from './api/hooks';
@@ -111,6 +112,9 @@ export function App() {
             mb={4}
           />
         ))}
+        <Text size="xs" c="dimmed" mt="auto" pt="sm" title="Когда собран интерфейс. После обновления здесь должна быть новая дата.">
+          Версия от {dayjs(__BUILD_TIME__).format('D MMMM YYYY, HH:mm')}
+        </Text>
       </AppShell.Navbar>
 
       <AppShell.Main>

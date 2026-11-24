@@ -43,7 +43,8 @@ public sealed class BatchWriteOff : Entity
 /// <summary>
 /// Партия изделия, изготовленная в конкретный день: одна строка таблицы дня.
 /// Себестоимость фиксируется в момент изготовления и не меняется, когда дорожает сырьё.
-/// Непроданный остаток переносится на следующие дни, пока его не продадут или не спишут.
+/// Затраты партии относятся только к дню изготовления. Непроданный остаток сам на следующие
+/// дни не переходит: его переносят командой, и тогда в этих днях его можно продать или списать.
 /// </summary>
 public sealed class ProductionBatch : AggregateRoot
 {
@@ -85,6 +86,15 @@ public sealed class ProductionBatch : AggregateRoot
 
     /// <summary>День, когда остаток стал нулевым. Пусто, пока в партии что-то осталось.</summary>
     public DateOnly? ClosedOn { get; private set; }
+
+    /// <summary>
+    /// До какого дня включительно перенесён остаток. Пусто — остаток не переносили,
+    /// он остаётся в дне изготовления.
+    /// </summary>
+    public DateOnly? CarriedUntil { get; private set; }
+
+    /// <summary>Последний день, в который партию можно продавать и списывать.</summary>
+    public DateOnly LastAvailableDay => CarriedUntil ?? ProductionDate;
 
     public DateTime CreatedAt { get; private set; }
 
@@ -251,8 +261,49 @@ public sealed class ProductionBatch : AggregateRoot
             ReservedFromStock = true,
             SplitFromBatchId = SplitFromBatchId ?? Id,
             PriceBeforeOrder = UnitPrice,
+            CarriedUntil = CarriedUntil,
             CreatedAt = DateTime.UtcNow,
         };
+    }
+
+    /// <summary>Можно ли продавать и списывать из партии в этот день.</summary>
+    public bool IsAvailableOn(DateOnly date) => date >= ProductionDate && date <= LastAvailableDay;
+
+    public void EnsureAvailableOn(DateOnly date)
+    {
+        if (date < ProductionDate)
+            throw new DomainException("Дата не может быть раньше дня изготовления партии.");
+        if (date > LastAvailableDay)
+            throw new DomainException(
+                $"Остаток от {ProductionDate:dd.MM} не перенесён на {date:dd.MM}. Сначала перенесите его на этот день.");
+    }
+
+    /// <summary>Переносит непроданный остаток вперёд, по указанный день включительно.</summary>
+    public void CarryTo(DateOnly date)
+    {
+        if (date <= ProductionDate)
+            throw new DomainException("Перенести остаток можно только на следующие дни.");
+        if (RemainingQuantity <= 0)
+            throw new DomainException("Переносить нечего: всё продано или списано.");
+        if (date > LastAvailableDay)
+            CarriedUntil = date;
+    }
+
+    /// <summary>
+    /// Отменяет перенос после указанного дня: остаток снова заканчивается в этот день.
+    /// Нельзя, если в следующих днях из партии уже продавали или списывали.
+    /// </summary>
+    public void CancelCarryAfter(DateOnly lastDay)
+    {
+        if (lastDay < ProductionDate)
+            throw new DomainException("Дата не может быть раньше дня изготовления партии.");
+        if (lastDay >= LastAvailableDay)
+            return;
+        if (_sales.Any(s => s.Date > lastDay) || _writeOffs.Any(w => w.Date > lastDay))
+            throw new DomainException(
+                $"Перенесённое уже продавали или списывали после {lastDay:dd.MM}. Сначала уберите эти продажи и списания.");
+
+        CarriedUntil = lastDay == ProductionDate ? null : lastDay;
     }
 
     /// <summary>Можно ли вернуть отделённые изделия обратно в эту партию одной строкой.</summary>

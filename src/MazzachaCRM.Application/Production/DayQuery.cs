@@ -36,9 +36,11 @@ public sealed record DayBatchDto(
     int? OrderNumber,
     bool OrderIsConsignment,
     decimal OrderReturned,
-    bool FromStock);
+    bool FromStock,
+    DateOnly? CarriedUntil,
+    bool CanCarry);
 
-/// <summary>Остаток прошлых дней, который можно продать или списать сегодня.</summary>
+/// <summary>Остаток прошлых дней, перенесённый на этот день: его можно продать или списать.</summary>
 public sealed record DayCarryOverDto(
     Guid Id,
     Guid ProductId,
@@ -57,7 +59,25 @@ public sealed record DayCarryOverDto(
     Guid? OrderId,
     int? OrderNumber,
     bool OrderIsConsignment,
-    bool OrderSaleLocked);
+    bool OrderSaleLocked,
+    DateOnly? CarriedUntil,
+    bool CanCarry);
+
+/// <summary>
+/// Непроданное за прошлые дни, которое не перенесли и не списали: о нём стоит решить —
+/// перенести на этот день или списать.
+/// </summary>
+public sealed record DayLeftoverDto(
+    Guid BatchId,
+    Guid ProductId,
+    string ProductName,
+    DateOnly ProductionDate,
+    DateOnly LastDay,
+    decimal Remaining,
+    decimal UnitPrice,
+    decimal UnitCost,
+    int? OrderNumber,
+    bool OrderIsConsignment);
 
 public sealed record DaySummaryDto(
     decimal ProductionCost,
@@ -84,36 +104,68 @@ public sealed record DayDto(
     IReadOnlyList<DayBatchDto> Batches,
     IReadOnlyList<DayCarryOverDto> CarryOver,
     IReadOnlyList<ExpenseDto> Expenses,
-    IReadOnlyList<OrderDto> Orders);
+    IReadOnlyList<OrderDto> Orders,
+    IReadOnlyList<OrderDto> Deliveries,
+    IReadOnlyList<DayLeftoverDto> Leftovers);
 
 public sealed record GetDayQuery(DateOnly Date) : IQuery<DayDto>;
 
 public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costing) : IQueryHandler<GetDayQuery, DayDto>
 {
+    /// <summary>За сколько прошлых дней напоминать о непроданном, которое не перенесли и не списали.</summary>
+    private const int LeftoverDays = 7;
+
     public async Task<DayDto> Handle(GetDayQuery query, CancellationToken ct)
     {
         var date = query.Date;
 
-        // Партии этого дня и незакрытые к его началу партии прошлых дней.
+        // Партии этого дня и партии прошлых дней, перенесённые на него (или с продажами в этот день).
         var batches = await db.Batches
             .Include(b => b.Sales)
             .Include(b => b.WriteOffs)
             .Where(b => b.ProductionDate == date ||
-                        (b.ProductionDate < date && (b.ClosedOn == null || b.ClosedOn >= date)))
+                        (b.ProductionDate < date &&
+                         ((b.CarriedUntil != null && b.CarriedUntil >= date) ||
+                          b.Sales.Any(s => s.Date == date) ||
+                          b.WriteOffs.Any(w => w.Date == date))))
             .ToListAsync(ct);
+
+        // Непроданное за последние дни, которое не перенесли и не списали.
+        var visibleIds = batches.Select(b => b.Id).ToHashSet();
+        var leftoverCandidates = (await db.Batches
+                .Include(b => b.Sales)
+                .Include(b => b.WriteOffs)
+                .Where(b => b.ClosedOn == null &&
+                            b.ProductionDate < date &&
+                            b.ProductionDate >= date.AddDays(-LeftoverDays * 2) &&
+                            (b.CarriedUntil == null || b.CarriedUntil < date))
+                .ToListAsync(ct))
+            .Where(b => !visibleIds.Contains(b.Id) && b.RemainingQuantity > 0)
+            .ToList();
 
         var productNames = await db.Products.ToDictionaryAsync(p => p.Id, p => p.Name, ct);
         var expenses = await db.Expenses.Where(e => e.Date == date).OrderBy(e => e.Name).ToListAsync(ct);
 
-        // Заказы, которые нужно выдать в этот день или которые в этот день изготовлены.
+        // Заказы, которые готовят в этот день: здесь их затраты и прибыль.
         var dayOrders = await db.Orders
             .Include(o => o.Items)
             .Include(o => o.Payments)
-            .Where(o => o.Status != OrderStatus.Cancelled && (o.DueDate == date || o.ProducedDate == date))
+            .Where(o => o.Status != OrderStatus.Cancelled && o.ProductionDate == date)
+            .ToListAsync(ct);
+
+        // Заказы, приготовленные раньше, которые в этот день нужно выдать или доставить.
+        var deliveries = await db.Orders
+            .Include(o => o.Items)
+            .Include(o => o.Payments)
+            .Where(o => o.Status != OrderStatus.Cancelled && o.DueDate == date && o.ProductionDate < date)
             .ToListAsync(ct);
 
         // Заказы, к которым относятся партии на экране, и все неоплаченные — для подписей и долгов.
-        var batchOrderIds = batches.Where(b => b.OrderId != null).Select(b => b.OrderId!.Value).Distinct().ToList();
+        var batchOrderIds = batches.Concat(leftoverCandidates)
+            .Where(b => b.OrderId != null)
+            .Select(b => b.OrderId!.Value)
+            .Distinct()
+            .ToList();
         var relatedOrders = await db.Orders
             .Include(o => o.Items)
             .Include(o => o.Payments)
@@ -141,17 +193,26 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
             .ThenBy(b => b.CreatedAt)
             .ToList();
         var carryOver = batches
-            .Where(b => b.ProductionDate < date && b.RemainingAtStartOf(date) > 0)
+            .Where(b => b.ProductionDate < date &&
+                        (b.RemainingAtStartOf(date) > 0 || b.SoldOn(date) > 0 || b.WrittenOffOn(date) > 0))
             .OrderBy(b => b.ProductionDate)
             .ThenBy(b => Name(b.ProductId))
             .ToList();
+        var leftovers = leftoverCandidates
+            .Where(b => !OrderBound(b, date) && EffectiveLastDay(b) < date && EffectiveLastDay(b) >= date.AddDays(-LeftoverDays))
+            .OrderByDescending(EffectiveLastDay)
+            .ThenBy(b => Name(b.ProductId))
+            .ToList();
 
+        // Затраты партии целиком относятся к дню изготовления, выручка — к дню продажи.
+        // Непроданное и не перенесённое — убыток дня изготовления; на следующие дни оно не влияет.
         var productionCost = today.Sum(b => b.TotalCost);
         var expensesTotal = expenses.Sum(e => e.Amount);
         var totalCosts = productionCost + expensesTotal;
         var all = today.Concat(carryOver).ToList();
         var revenue = all.Sum(b => b.RevenueOn(date));
         var potentialRevenue = today.Sum(PotentialRevenue);
+        var unsoldAtPrice = all.Sum(b => b.RemainingAtEndOf(date) * b.UnitPrice);
 
         // Деньги на руках: оплаты по заказам и всё, что продано с витрины.
         // Продажа заказа в день готовности — это ещё не деньги, они придут оплатой.
@@ -160,10 +221,9 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
             .Where(s => s.Date == date && !IsOrderSale(b, s.Date))
             .Sum(s => s.Amount));
 
-        // Фактическая прибыль: проданное минус его себестоимость, списанное в этот день и расходы дня.
-        // Потенциальная: она же плюс то, что ещё можно заработать на непроданных остатках.
-        var actualProfit = all.Sum(b => b.RevenueOn(date) - b.SoldOn(date) * b.UnitCost - b.WrittenOffOn(date) * b.UnitCost)
-            - expensesTotal;
+        // Фактическая прибыль: выручка дня минус все его затраты.
+        // Потенциальная: она же плюс то, что ещё можно выручить, если продать остаток.
+        var actualProfit = revenue - totalCosts;
 
         var summary = new DaySummaryDto(
             productionCost.Money(),
@@ -173,10 +233,10 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
             revenue.Money(),
             (revenue - totalCosts).Money(),
             potentialRevenue.Money(),
-            (actualProfit + all.Sum(b => b.RemainingAtEndOf(date) * (b.UnitPrice - b.UnitCost))).Money(),
+            (actualProfit + unsoldAtPrice).Money(),
             all.Sum(b => b.RevenueOn(date) - b.SoldOn(date) * b.UnitCost).Money(),
             all.Sum(b => b.WrittenOffOn(date) * b.UnitCost).Money(),
-            all.Sum(b => b.RemainingAtEndOf(date) * b.UnitPrice).Money(),
+            unsoldAtPrice.Money(),
             all.Sum(b => b.RemainingAtEndOf(date) * b.UnitCost).Money(),
             (receivedFromOrders + cashSales).Money(),
             receivedFromOrders.Money(),
@@ -184,8 +244,14 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
             actualProfit.Money(),
             dayOrders.Where(o => o.Balance > 0).Sum(o => o.Balance).Money());
 
-        var mapper = await OrderMapper.CreateAsync(db, costing, dayOrders, ct);
+        var mapper = await OrderMapper.CreateAsync(db, costing, dayOrders.Concat(deliveries).ToList(), ct);
         var orderRows = dayOrders
+            .OrderBy(o => o.Status == OrderStatus.Delivered)
+            .ThenBy(o => o.DueTime ?? TimeOnly.MaxValue)
+            .ThenBy(o => o.Number)
+            .Select(mapper.Map)
+            .ToList();
+        var deliveryRows = deliveries
             .OrderBy(o => o.Status == OrderStatus.Delivered)
             .ThenBy(o => o.DueTime ?? TimeOnly.MaxValue)
             .ThenBy(o => o.Number)
@@ -198,12 +264,27 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
             today.Select(ToBatchRow).ToList(),
             carryOver.Select(ToCarryOverRow).ToList(),
             expenses.Select(e => new ExpenseDto(e.Id, e.Date, e.Name, e.Amount.Money())).ToList(),
-            orderRows);
+            orderRows,
+            deliveryRows,
+            leftovers.Select(ToLeftoverRow).ToList());
 
         string Name(Guid productId) => productNames.GetValueOrDefault(productId, "Удалённое изделие");
 
         Order? OrderOf(ProductionBatch b) =>
             b.OrderId is { } id && ordersById.TryGetValue(id, out var order) ? order : null;
+
+        // Последний день, когда из партии можно продавать: возврат по заказу — не раньше дня готовности заказа.
+        DateOnly EffectiveLastDay(ProductionBatch b) =>
+            OrderOf(b)?.ProducedDate is { } readyDate && readyDate > b.LastAvailableDay ? readyDate : b.LastAvailableDay;
+
+        // Изделия ещё уйдут в заказ: это не остаток.
+        bool OrderBound(ProductionBatch b, DateOnly day) =>
+            b.OrderId is not null && OrderOf(b) is { } order && !(order.ProducedDate is { } readyDate && readyDate <= day);
+
+        bool CanCarry(ProductionBatch b) =>
+            EffectiveLastDay(b) <= date && b.RemainingAtEndOf(date) > 0 && !OrderBound(b, date);
+
+        DateOnly? CarriedFurther(ProductionBatch b) => b.CarriedUntil is { } until && until > date ? until : null;
 
         // Продажа, которую записал заказ в день своей готовности: это долг клиента, а не деньги на руках.
         bool IsOrderSale(ProductionBatch b, DateOnly saleDate) => OrderOf(b)?.ProducedDate == saleDate;
@@ -252,7 +333,9 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
                 OrderOf(b)?.Number,
                 IsShop(b),
                 Returned(b),
-                b.ReservedFromStock);
+                b.ReservedFromStock,
+                CarriedFurther(b),
+                CanCarry(b));
         }
 
         DayCarryOverDto ToCarryOverRow(ProductionBatch b)
@@ -277,7 +360,22 @@ public sealed class GetDayHandler(IReadDbContext db, CostingContextLoader costin
                 b.OrderId,
                 OrderOf(b)?.Number,
                 IsShop(b),
-                OrderSaleLocked(b));
+                OrderSaleLocked(b),
+                CarriedFurther(b),
+                CanCarry(b));
         }
+
+        DayLeftoverDto ToLeftoverRow(ProductionBatch b) =>
+            new(
+                b.Id,
+                b.ProductId,
+                Name(b.ProductId),
+                b.ProductionDate,
+                EffectiveLastDay(b),
+                b.RemainingQuantity,
+                b.UnitPrice.Precise(),
+                b.UnitCost.Precise(),
+                OrderOf(b)?.Number,
+                IsShop(b));
     }
 }

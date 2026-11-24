@@ -174,6 +174,9 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<DateOnly?>("ProducedDate")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateOnly>("ProductionDate")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateOnly?>("ReportedDate")
                         .HasColumnType("TEXT");
 
@@ -188,6 +191,8 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("Number")
                         .IsUnique();
+
+                    b.HasIndex("ProductionDate");
 
                     b.ToTable("Orders", (string)null);
                 });
@@ -310,6 +315,9 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateOnly?>("CarriedUntil")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateOnly?>("ClosedOn")
                         .HasColumnType("TEXT");
 
@@ -353,6 +361,8 @@ namespace MazzachaCRM.Infrastructure.Persistence.Migrations
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CarriedUntil");
 
                     b.HasIndex("ClosedOn");
 

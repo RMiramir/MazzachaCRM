@@ -92,7 +92,7 @@ export function OverviewPage() {
                   {data.upcomingOrders.map((order) => (
                     <div key={order.id}>
                       <Text size="xs" c="dimmed" mb={2}>
-                        {order.dueDate === data.today ? 'Сегодня' : dayjs(order.dueDate).format('D MMMM, dd')}
+                        Приготовить {order.productionDate === data.today ? 'сегодня' : dayjs(order.productionDate).format('D MMMM, dd')}
                       </Text>
                       <OrderCard order={order} actionDate={today()} />
                     </div>

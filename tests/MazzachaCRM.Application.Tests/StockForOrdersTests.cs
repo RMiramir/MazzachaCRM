@@ -115,6 +115,13 @@ public class StockForOrdersTests : IAsyncLifetime
     {
         // Вчера испекли 10, сегодня заказ: 4 из готового и ещё 10 нужно испечь.
         var showcase = await _app.Send(new CreateBatchCommand(Monday, _trifle, 10, null, null));
+
+        // Вчерашнее можно взять в сегодняшний заказ, только если остаток перенесли на сегодня.
+        await Assert.ThrowsAsync<DomainException>(() => Order(Tuesday, new OrderItemInput(_trifle, 4, 18, null, showcase)));
+        Assert.Empty(await _app.Query(new GetFreeStockQuery(null, Tuesday)));
+        await _app.Send(new CarryLeftoversCommand([showcase], Tuesday));
+        Assert.Equal(10m, Assert.Single(await _app.Query(new GetFreeStockQuery(null, Tuesday))).Available);
+
         var order = await Order(
             Tuesday,
             new OrderItemInput(_trifle, 4, 18, null, showcase),
@@ -213,6 +220,7 @@ public class StockForOrdersTests : IAsyncLifetime
     public async Task Shop_report_for_stock_items_is_booked_on_the_ready_day()
     {
         var showcase = await _app.Send(new CreateBatchCommand(Monday, _trifle, 10, null, null));
+        await _app.Send(new CarryLeftoversCommand([showcase], Tuesday));
         var order = await Order(Tuesday, new OrderItemInput(_trifle, 10, 15, null, showcase));
         await _app.Send(new ChangeOrderStatusCommand(order, OrderStatus.Delivered, Tuesday));
         var itemId = (await _app.Query(new GetOrderQuery(order))).Items.Single().Id;

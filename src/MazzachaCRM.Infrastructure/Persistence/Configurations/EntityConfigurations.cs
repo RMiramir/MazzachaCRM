@@ -74,6 +74,7 @@ internal sealed class ProductionBatchConfiguration : IEntityTypeConfiguration<Pr
 
         builder.HasIndex(x => x.ProductionDate);
         builder.HasIndex(x => x.ClosedOn);
+        builder.HasIndex(x => x.CarriedUntil);
     }
 }
 
@@ -125,6 +126,7 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(x => x.Note).HasMaxLength(1000);
         builder.HasIndex(x => x.Number).IsUnique();
         builder.HasIndex(x => x.DueDate);
+        builder.HasIndex(x => x.ProductionDate);
         builder.HasOne<Customer>().WithMany().HasForeignKey(x => x.CustomerId).OnDelete(DeleteBehavior.Restrict);
 
         builder.HasMany(x => x.Items).WithOne().HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Cascade);

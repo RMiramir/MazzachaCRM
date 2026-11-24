@@ -87,7 +87,8 @@ public sealed class GetOverviewHandler(IReadDbContext db, CostingContextLoader c
         var upcoming = await db.Orders
             .Include(o => o.Items)
             .Include(o => o.Payments)
-            .Where(o => o.DueDate >= today && o.DueDate <= today.AddDays(7) &&
+            .Where(o => ((o.DueDate >= today && o.DueDate <= today.AddDays(7)) ||
+                         (o.ProductionDate >= today && o.ProductionDate <= today.AddDays(7))) &&
                         o.Status != OrderStatus.Delivered && o.Status != OrderStatus.Cancelled)
             .ToListAsync(ct);
         var mapper = await OrderMapper.CreateAsync(db, costing, upcoming, ct);
@@ -107,7 +108,7 @@ public sealed class GetOverviewHandler(IReadDbContext db, CostingContextLoader c
             periods,
             chartDays,
             goal,
-            upcoming.OrderBy(o => o.DueDate).ThenBy(o => o.DueTime ?? TimeOnly.MaxValue).Select(mapper.Map).ToList(),
+            upcoming.OrderBy(o => o.ProductionDate).ThenBy(o => o.DueDate).ThenBy(o => o.DueTime ?? TimeOnly.MaxValue).Select(mapper.Map).ToList(),
             unpaid.Sum(o => o.Balance).Money(),
             unpaid.Select(o => o.CustomerId).Distinct().Count(),
             lowStock);

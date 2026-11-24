@@ -104,9 +104,8 @@ public sealed class DemoDataSeeder(IDispatcher dispatcher, IReadDbContext db)
             [new OrderItemInput(muffin, 23, 3.25m, null)]), ct);
         await dispatcher.Send(new ChangeOrderStatusCommand(shipment, OrderStatus.Delivered, lastDay.AddDays(-4)), ct);
         var shipmentItem = (await dispatcher.Query(new GetOrderQuery(shipment), ct)).Items[0].Id;
-        await dispatcher.Send(new SubmitShopReportCommand(shipment, lastDay.AddDays(-3), [new ShopReportItemInput(shipmentItem, 20)]), ct);
-        var returnedBatch = (await dispatcher.Query(new GetDayQuery(lastDay.AddDays(-3)), ct)).CarryOver.Single().Id;
-        await dispatcher.Send(new SetBatchWriteOffCommand(returnedBatch, lastDay.AddDays(-3), 3, "Вернули из магазина"), ct);
+        await dispatcher.Send(new SubmitShopReportCommand(
+            shipment, lastDay.AddDays(-3), [new ShopReportItemInput(shipmentItem, 20, WrittenOff: 3)]), ct);
         await dispatcher.Send(new AddOrderPaymentCommand(shipment, lastDay.AddDays(-3), 30, "Магазин, частично"), ct);
 
         // ---------- Предзаказ на завтра ----------

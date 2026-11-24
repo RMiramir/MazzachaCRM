@@ -68,6 +68,8 @@ internal static class OrderRules
 
 // ---------- Создание ----------
 
+/// <param name="DueDate">День выдачи или доставки.</param>
+/// <param name="ProductionDate">День приготовления. Пусто — тот же, что и день выдачи.</param>
 public sealed record CreateOrderCommand(
     Guid? CustomerId,
     string? NewCustomerName,
@@ -76,7 +78,8 @@ public sealed record CreateOrderCommand(
     TimeOnly? DueTime,
     decimal Prepayment,
     string? Note,
-    IReadOnlyList<OrderItemInput> Items) : ICommand<Guid>;
+    IReadOnlyList<OrderItemInput> Items,
+    DateOnly? ProductionDate = null) : ICommand<Guid>;
 
 public sealed class CreateOrderValidator : AbstractValidator<CreateOrderCommand>
 {
@@ -92,6 +95,10 @@ public sealed class CreateOrderValidator : AbstractValidator<CreateOrderCommand>
         RuleFor(x => x.Note).MaximumLength(1000).WithName("Заметка");
         RuleFor(x => x.Items).NotEmpty().WithMessage("Добавьте в заказ хотя бы одно изделие.");
         RuleForEach(x => x.Items).SetValidator(new OrderItemInputValidator());
+        RuleFor(x => x.DueDate)
+            .GreaterThanOrEqualTo(x => x.ProductionDate!.Value)
+            .When(x => x.ProductionDate is not null)
+            .WithMessage("День выдачи не может быть раньше дня приготовления.");
     }
 }
 
@@ -123,6 +130,7 @@ public sealed class CreateOrderHandler(
         var order = Order.Create(
             await orders.NextNumberAsync(ct),
             customerId,
+            command.ProductionDate ?? command.DueDate,
             command.DueDate,
             command.DueTime,
             command.Note,
@@ -139,13 +147,17 @@ public sealed class CreateOrderHandler(
 
 // ---------- Изменение ----------
 
+/// <param name="ProductionDate">
+/// День приготовления. Пусто — у изготовленного заказа остаётся прежним, у остальных совпадает с днём выдачи.
+/// </param>
 public sealed record UpdateOrderCommand(
     Guid Id,
     Guid CustomerId,
     DateOnly DueDate,
     TimeOnly? DueTime,
     string? Note,
-    IReadOnlyList<OrderItemInput> Items) : ICommand<Unit>;
+    IReadOnlyList<OrderItemInput> Items,
+    DateOnly? ProductionDate = null) : ICommand<Unit>;
 
 public sealed class UpdateOrderValidator : AbstractValidator<UpdateOrderCommand>
 {
@@ -155,6 +167,10 @@ public sealed class UpdateOrderValidator : AbstractValidator<UpdateOrderCommand>
         RuleFor(x => x.Note).MaximumLength(1000).WithName("Заметка");
         RuleFor(x => x.Items).NotEmpty().WithMessage("Добавьте в заказ хотя бы одно изделие.");
         RuleForEach(x => x.Items).SetValidator(new OrderItemInputValidator());
+        RuleFor(x => x.DueDate)
+            .GreaterThanOrEqualTo(x => x.ProductionDate!.Value)
+            .When(x => x.ProductionDate is not null)
+            .WithMessage("День выдачи не может быть раньше дня приготовления.");
     }
 }
 
@@ -173,7 +189,9 @@ public sealed class UpdateOrderHandler(
         _ = await customers.GetByIdAsync(command.CustomerId, ct)
             ?? throw new NotFoundException("Клиент не найден.");
 
-        order.UpdateDetails(command.CustomerId, command.DueDate, command.DueTime, command.Note);
+        var productionDate = command.ProductionDate ?? (order.IsProduced ? order.ProductionDate : command.DueDate);
+        var productionDateChanged = productionDate != order.ProductionDate;
+        order.UpdateDetails(command.CustomerId, productionDate, command.DueDate, command.DueTime, command.Note);
 
         var specs = command.Items.Select(i => i.ToSpec()).ToList();
         var orderBatches = await batches.ListByOrderAsync(order.Id, ct);
@@ -185,7 +203,9 @@ public sealed class UpdateOrderHandler(
             .ToList();
         var newSources = command.Items.Select(i => i.FromBatchId).ToList();
 
-        if (!order.HasSameItems(specs) || !currentSources.SequenceEqual(newSources))
+        // Новый день приготовления: взятое из готового проверяется заново — оно должно быть доступно в этот день.
+        var mustReserveAgain = productionDateChanged && reserved.Count > 0;
+        if (!order.HasSameItems(specs) || !currentSources.SequenceEqual(newSources) || mustReserveAgain)
         {
             await OrderRules.EnsureSellableAsync(products, command.Items, ct);
 
@@ -377,8 +397,8 @@ public sealed class RemoveOrderPaymentHandler(IOrderRepository orders) : IComman
 // ---------- Отчёт магазина ----------
 
 /// <param name="WrittenOff">
-/// Сколько из возврата списать сразу, в день отправки: тогда оно не переходит в остатки следующих дней.
-/// Остальной возврат становится остатком, который можно продать или списать позже.
+/// Сколько из возврата списать сразу, в день отправки. Остальной возврат становится остатком дня отправки:
+/// его можно перенести на другой день и там продать или списать.
 /// </param>
 public sealed record ShopReportItemInput(Guid ItemId, decimal Sold, decimal WrittenOff = 0);
 
@@ -400,7 +420,8 @@ public sealed class SubmitShopReportValidator : AbstractValidator<SubmitShopRepo
 
 /// <summary>
 /// Магазин сообщил, сколько продано: остальное считается возвратом. Выручка дня отправки
-/// уменьшается на возвраты, а возвращённые изделия становятся остатком, который можно продать или списать.
+/// уменьшается на возвраты, а возвращённые изделия становятся остатком этого дня, который можно
+/// перенести, продать или списать.
 /// </summary>
 public sealed class SubmitShopReportHandler(IOrderRepository orders, IProductionBatchRepository batches)
     : ICommandHandler<SubmitShopReportCommand, Unit>
@@ -462,6 +483,7 @@ public sealed class RepeatOrderHandler(IOrderRepository orders, IProductReposito
         var order = Order.Create(
             await orders.NextNumberAsync(ct),
             source.CustomerId,
+            command.DueDate,
             command.DueDate,
             source.DueTime,
             null,

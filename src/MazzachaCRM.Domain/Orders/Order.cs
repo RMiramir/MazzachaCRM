@@ -69,9 +69,10 @@ public sealed class OrderPayment : Entity
 }
 
 /// <summary>
-/// Заказ клиента или поставка в магазин. Когда заказ готов, под него создаются партии,
-/// и его затраты и выручка записываются в день готовности. Деньги учитываются отдельно —
-/// платежами в те дни, когда они пришли. Разница между суммой заказа и платежами — долг.
+/// Заказ клиента или поставка в магазин. У заказа два дня: день приготовления, в который
+/// записываются его затраты и выручка, и день выдачи (доставки), который может быть позже.
+/// Деньги учитываются отдельно — платежами в те дни, когда они пришли. Разница между суммой
+/// заказа и платежами — долг.
 /// </summary>
 public sealed class Order : AggregateRoot
 {
@@ -84,7 +85,16 @@ public sealed class Order : AggregateRoot
 
     public int Number { get; private set; }
     public Guid CustomerId { get; private set; }
+
+    /// <summary>
+    /// День приготовления: в нём заказ показывается подробно, в нём считаются его затраты и прибыль.
+    /// Когда заказ готов, совпадает с <see cref="ProducedDate"/>.
+    /// </summary>
+    public DateOnly ProductionDate { get; private set; }
+
+    /// <summary>День выдачи или доставки. Не раньше дня приготовления.</summary>
     public DateOnly DueDate { get; private set; }
+
     public TimeOnly? DueTime { get; private set; }
     public string? Note { get; private set; }
     public OrderStatus Status { get; private set; }
@@ -114,6 +124,7 @@ public sealed class Order : AggregateRoot
     public static Order Create(
         int number,
         Guid customerId,
+        DateOnly productionDate,
         DateOnly dueDate,
         TimeOnly? dueTime,
         string? note,
@@ -125,14 +136,21 @@ public sealed class Order : AggregateRoot
             Status = OrderStatus.New,
             CreatedAt = DateTime.UtcNow,
         };
-        order.UpdateDetails(customerId, dueDate, dueTime, note);
+        order.UpdateDetails(customerId, productionDate, dueDate, dueTime, note);
         order.SetItems(items);
         return order;
     }
 
-    public void UpdateDetails(Guid customerId, DateOnly dueDate, TimeOnly? dueTime, string? note)
+    public void UpdateDetails(Guid customerId, DateOnly productionDate, DateOnly dueDate, TimeOnly? dueTime, string? note)
     {
+        if (dueDate < productionDate)
+            throw new DomainException("День выдачи не может быть раньше дня приготовления.");
+        if (IsProduced && productionDate != ProductionDate)
+            throw new DomainException(
+                "Заказ уже приготовлен, его затраты и выручка записаны в день приготовления. Чтобы перенести этот день, верните заказ в работу.");
+
         CustomerId = customerId;
+        ProductionDate = productionDate;
         DueDate = dueDate;
         DueTime = dueTime;
         Note = Guard.Optional(note);
@@ -208,16 +226,21 @@ public sealed class Order : AggregateRoot
         if (!CanTransition(Status, status))
             throw new DomainException($"Нельзя перевести заказ из статуса «{Title(Status)}» в «{Title(status)}».");
 
+        var wasProduced = IsProduced;
         Status = status;
         switch (status)
         {
             case OrderStatus.Ready:
-                ProducedDate ??= date;
+                // Готов в указанный день: туда переезжает и день приготовления.
+                if (!wasProduced)
+                    MarkProduced(date);
                 DeliveredDate = null;
                 break;
             case OrderStatus.Delivered:
-                ProducedDate ??= date;
-                DeliveredDate = date;
+                // Выдан, не отмеченный готовым: приготовлен в свой день, если тот уже наступил.
+                if (!wasProduced)
+                    MarkProduced(ProductionDate <= date ? ProductionDate : date);
+                DeliveredDate = date < ProducedDate!.Value ? ProducedDate : date;
                 break;
             default:
                 // Изготовленное отменено или возвращено в работу: возвраты по отчёту больше не действуют.
@@ -228,6 +251,14 @@ public sealed class Order : AggregateRoot
                     item.SetReturned(0);
                 break;
         }
+    }
+
+    private void MarkProduced(DateOnly date)
+    {
+        ProducedDate = date;
+        ProductionDate = date;
+        if (DueDate < date)
+            DueDate = date;
     }
 
     public static bool CanTransition(OrderStatus from, OrderStatus to) =>

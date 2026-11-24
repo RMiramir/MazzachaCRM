@@ -73,13 +73,13 @@ public class OrderTests
     private static readonly DateOnly Today = new(2026, 11, 12);
 
     private static Order NewOrder(decimal quantity = 1) =>
-        Order.Create(1, Guid.NewGuid(), Today.AddDays(1), null, null, [new OrderItemSpec(Guid.NewGuid(), quantity, 100, null)]);
+        Order.Create(1, Guid.NewGuid(), Today.AddDays(1), Today.AddDays(1), null, null, [new OrderItemSpec(Guid.NewGuid(), quantity, 100, null)]);
 
     [Fact]
     public void Balance_is_total_minus_payments()
     {
         var order = Order.Create(
-            1, Guid.NewGuid(), Today, null, null,
+            1, Guid.NewGuid(), Today, Today, null, null,
             [new OrderItemSpec(Guid.NewGuid(), 2, 100, null), new OrderItemSpec(Guid.NewGuid(), 10, 3.5m, null)]);
 
         order.AddPayment(Today, 50, "Предоплата");

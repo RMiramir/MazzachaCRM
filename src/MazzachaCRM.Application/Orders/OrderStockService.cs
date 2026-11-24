@@ -19,6 +19,10 @@ public sealed class OrderStockService(IProductionBatchRepository batches, IStock
             ?? throw new DomainException("Готовые изделия не найдены: возможно, эту строку дня уже удалили.");
         if (source.ProductId != item.ProductId)
             throw new DomainException("Выбранные готовые изделия относятся к другому изделию.");
+        if (!source.IsAvailableOn(order.ProductionDate))
+            throw new DomainException(
+                $"Готовые изделия от {source.ProductionDate:dd.MM} не перенесены на день приготовления заказа ({order.ProductionDate:dd.MM}). " +
+                "Перенесите остаток на этот день или выберите «Приготовить под заказ».");
 
         var quantityBefore = source.Quantity;
         var reserved = source.ReserveForOrder(item.Quantity, order.Id, item.Id, item.UnitPrice);

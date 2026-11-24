@@ -3,6 +3,10 @@ rem Запуск Mazzacha CRM на Windows. Нужны .NET 10 SDK и Node.js 20
 chcp 65001 >nul
 cd /d "%~dp0"
 
+rem Если программа уже открыта в другом окне, закрываем её: иначе новая версия
+rem не соберётся и не запустится, а браузер покажет старую.
+taskkill /F /IM MazzachaCRM.Api.exe >nul 2>&1
+
 pushd web
 if exist "node_modules" goto build
 echo Устанавливаю библиотеки интерфейса: это нужно только при первом запуске...

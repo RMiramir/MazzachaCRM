@@ -245,22 +245,25 @@ internal static class BatchRules
     }
 
     /// <summary>
-    /// Продажа по заказу записывается в день его готовности и меняется только через заказ.
-    /// Остаток, который вернул магазин, в следующие дни продаётся и списывается как обычно.
+    /// Продавать и списывать вручную можно в день изготовления и в дни, на которые остаток перенесли.
+    /// Продажа по заказу записывается в день его готовности и меняется только через заказ;
+    /// остаток, который вернул магазин, в перенесённые дни продаётся и списывается как обычно.
     /// </summary>
     public static async Task EnsureManualEntryAllowedAsync(
         ProductionBatch batch, DateOnly date, IOrderRepository orders, CancellationToken ct)
     {
-        if (batch.OrderId is not { } orderId)
-            return;
+        if (batch.OrderId is { } orderId)
+        {
+            var order = await orders.GetByIdAsync(orderId, ct);
+            if (order?.ProducedDate is not { } readyDate)
+                throw new DomainException(
+                    "Эти изделия закреплены за заказом. Продажа запишется сама, когда заказ будет готов.");
 
-        var order = await orders.GetByIdAsync(orderId, ct);
-        if (order?.ProducedDate is not { } readyDate)
-            throw new DomainException(
-                "Эти изделия закреплены за заказом. Продажа запишется сама, когда заказ будет готов.");
+            if (date <= readyDate)
+                throw new DomainException(
+                    "В день готовности продажа по заказу записывается автоматически. Если магазин что-то вернул, внесите отчёт магазина в заказе.");
+        }
 
-        if (date <= readyDate)
-            throw new DomainException(
-                "В день готовности продажа по заказу записывается автоматически. Если магазин что-то вернул, внесите отчёт магазина в заказе.");
+        batch.EnsureAvailableOn(date);
     }
 }

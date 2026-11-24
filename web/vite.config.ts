@@ -5,6 +5,8 @@ import react from '@vitejs/plugin-react';
 // чтобы в рабочем режиме всё работало одним процессом.
 export default defineConfig({
   plugins: [react()],
+  // Время сборки показывается в меню: по нему видно, что открыт свежий интерфейс.
+  define: { __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
   server: {
     port: 5173,
     proxy: { '/api': 'http://localhost:5080' },

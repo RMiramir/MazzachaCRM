@@ -170,6 +170,10 @@ export interface DayBatch {
   orderIsConsignment: boolean;
   orderReturned: number;
   fromStock: boolean;
+  /** До какого дня остаток перенесён дальше этого дня. */
+  carriedUntil: string | null;
+  /** Остаток можно перенести на следующий день. */
+  canCarry: boolean;
 }
 
 export interface DayCarryOver {
@@ -191,6 +195,24 @@ export interface DayCarryOver {
   orderNumber: number | null;
   orderIsConsignment: boolean;
   orderSaleLocked: boolean;
+  /** До какого дня остаток перенесён дальше этого дня. */
+  carriedUntil: string | null;
+  /** Остаток можно перенести на следующий день. */
+  canCarry: boolean;
+}
+
+/** Непроданное за прошлые дни, которое не перенесли и не списали. */
+export interface DayLeftover {
+  batchId: string;
+  productId: string;
+  productName: string;
+  productionDate: string;
+  lastDay: string;
+  remaining: number;
+  unitPrice: number;
+  unitCost: number;
+  orderNumber: number | null;
+  orderIsConsignment: boolean;
 }
 
 export interface DaySummary {
@@ -226,7 +248,11 @@ export interface Day {
   batches: DayBatch[];
   carryOver: DayCarryOver[];
   expenses: Expense[];
+  /** Заказы, которые готовят в этот день. */
   orders: Order[];
+  /** Приготовленные раньше заказы, которые в этот день выдают или доставляют. */
+  deliveries: Order[];
+  leftovers: DayLeftover[];
 }
 
 export interface Customer {
@@ -276,6 +302,9 @@ export interface Order {
   customerName: string;
   customerPhone: string | null;
   isConsignment: boolean;
+  /** День приготовления: в нём затраты и прибыль заказа. */
+  productionDate: string;
+  /** День выдачи или доставки. */
   dueDate: string;
   dueTime: string | null;
   status: OrderStatus;
@@ -328,6 +357,7 @@ export interface OrderInput {
   customerId: string | null;
   newCustomerName: string | null;
   newCustomerPhone: string | null;
+  productionDate: string;
   dueDate: string;
   dueTime: string | null;
   prepayment: number;

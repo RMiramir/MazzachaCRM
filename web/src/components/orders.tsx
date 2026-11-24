@@ -1,6 +1,7 @@
 import {
   ActionIcon,
   Alert,
+  Anchor,
   Badge,
   Button,
   Checkbox,
@@ -29,13 +30,15 @@ import {
   IconPlus,
   IconReceipt,
   IconTrash,
+  IconTruckDelivery,
   IconX,
 } from '@tabler/icons-react';
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAction, useCurrency, useCustomers, useFreeStock, useProducts } from '../api/hooks';
 import type { Order, OrderStatus } from '../api/types';
-import { addDays, money, orderStatusColor, orderStatusLabel, quantity, shortDate, shortTime, toNumber, today } from '../lib/format';
+import { addDays, longDate, money, orderStatusColor, orderStatusLabel, quantity, shortDate, shortTime, toNumber, today } from '../lib/format';
 import { NumberField } from './inputs';
 import { Profit, useConfirm } from './ui';
 
@@ -54,7 +57,7 @@ export function nextStep(order: Order): Step | null {
         kind: 'status',
         status: 'Ready',
         label: 'Готов',
-        done: 'Заказ готов: затраты и выручка записаны в этот день, сырьё списано',
+        done: 'Заказ готов: затраты и выручка записаны в день приготовления, сырьё списано',
       };
     case 'Ready':
       return {
@@ -100,19 +103,40 @@ export function OrderStatusBadge({ order }: { order: Order }) {
 
 const STEPS: OrderStatus[] = ['New', 'InProgress', 'Ready', 'Delivered'];
 
+const earliest = (a: string, b: string) => (a < b ? a : b);
+
+/**
+ * В какой день записать новый статус. «Готов» — в день приготовления, но не позже сегодняшнего:
+ * сделали раньше плана — заказ переезжает на сегодня. «Выдан» — в день выдачи, но не позже сегодняшнего.
+ */
+export function statusDate(order: Order, status: OrderStatus): string {
+  if (status === 'Ready') return earliest(order.productionDate, today());
+  if (status === 'Delivered') return earliest(order.dueDate, today());
+  return today();
+}
+
+/** Подпись дня: «сегодня», «завтра» или дата. */
+function dayLabel(date: string): string {
+  if (date === today()) return 'сегодня';
+  if (date === addDays(today(), 1)) return 'завтра';
+  if (date === addDays(today(), -1)) return 'вчера';
+  return longDate(date);
+}
+
 const stepLabel = (order: Order, status: OrderStatus) =>
   status === 'Delivered' && order.isConsignment ? 'Отправлен' : orderStatusLabel[status];
 
-function statusDone(order: Order, status: OrderStatus): string {
+function statusDone(order: Order, status: OrderStatus, date: string): string {
   switch (status) {
     case 'New':
       return 'Заказ возвращён в начало';
     case 'InProgress':
       return order.status === 'Ready' ? 'Заказ возвращён в работу' : 'Заказ взят в работу';
     case 'Ready':
-      return order.status === 'Delivered'
-        ? 'Отметка о выдаче снята'
-        : 'Заказ готов: затраты и выручка записаны в этот день, сырьё списано';
+      if (order.status === 'Delivered') return 'Отметка о выдаче снята';
+      return date === order.productionDate
+        ? 'Заказ готов: затраты и выручка записаны в день приготовления, сырьё списано'
+        : `Заказ готов раньше плана: он перенесён на ${dayLabel(date)}, затраты и выручка записаны туда`;
     case 'Delivered':
       return order.isConsignment ? 'Поставка отправлена' : 'Заказ выдан';
     default:
@@ -122,9 +146,9 @@ function statusDone(order: Order, status: OrderStatus): string {
 
 /**
  * Перевод заказа в другой статус. Там, где действие убирает изделия из дня
- * или отменяет заказ, сначала спрашивает подтверждение.
+ * или отменяет заказ, сначала спрашивает подтверждение. Дату статуса выбирает {@link statusDate}.
  */
-export function useChangeStatus(order: Order, actionDate: string) {
+export function useChangeStatus(order: Order) {
   const confirm = useConfirm();
   const setStatus = useAction(api.orders.setStatus);
   const produced = order.status === 'Ready' || order.status === 'Delivered';
@@ -152,16 +176,17 @@ export function useChangeStatus(order: Order, actionDate: string) {
       if (!ok) return;
     }
 
-    await setStatus.mutateAsync({ id: order.id, status, date: actionDate });
-    notifications.show({ message: `№${order.number}. ${statusDone(order, status)}`, color: 'teal', autoClose: 3000 });
+    const date = statusDate(order, status);
+    await setStatus.mutateAsync({ id: order.id, status, date });
+    notifications.show({ message: `№${order.number}. ${statusDone(order, status, date)}`, color: 'teal', autoClose: 4000 });
   };
 
   return { change, pending: setStatus.isPending, target: setStatus.variables?.status };
 }
 
 /** Полоса шагов заказа: нажатие на шаг сразу переводит заказ в этот статус. */
-export function OrderStepper({ order, actionDate }: { order: Order; actionDate: string }) {
-  const { change, pending, target } = useChangeStatus(order, actionDate);
+export function OrderStepper({ order }: { order: Order }) {
+  const { change, pending, target } = useChangeStatus(order);
 
   if (order.status === 'Cancelled') {
     return (
@@ -203,8 +228,8 @@ export function OrderStepper({ order, actionDate }: { order: Order; actionDate: 
 }
 
 /** Статус в таблице заказов: нажатие открывает список, куда можно перевести заказ. */
-export function OrderStatusMenu({ order, actionDate }: { order: Order; actionDate: string }) {
-  const { change } = useChangeStatus(order, actionDate);
+export function OrderStatusMenu({ order }: { order: Order }) {
+  const { change } = useChangeStatus(order);
   return (
     <Menu position="bottom-start" withinPortal>
       <Menu.Target>
@@ -277,7 +302,7 @@ type Dialog =
 
 /**
  * Главная кнопка следующего шага и меню остальных действий.
- * `actionDate` — день, в который записываются готовность, выдача и оплата.
+ * `actionDate` — день, которым по умолчанию записываются оплата и отчёт магазина.
  */
 export function OrderActions({
   order,
@@ -293,7 +318,7 @@ export function OrderActions({
 }) {
   const confirm = useConfirm();
   const [dialog, setDialog] = useState<Dialog | null>(null);
-  const { change, pending } = useChangeStatus(order, actionDate);
+  const { change, pending } = useChangeStatus(order);
   const remove = useAction(api.orders.remove, 'Заказ удалён');
 
   const next = nextStep(order);
@@ -380,16 +405,40 @@ export function OrderActions({
       {dialog?.kind === 'payment' && <PaymentModal order={order} date={actionDate} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'report' && <ShopReportModal order={order} date={actionDate} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'repeat' && <RepeatModal order={order} onClose={() => setDialog(null)} />}
-      {dialog?.kind === 'status' && (
-        <StatusModal order={order} date={actionDate} onClose={() => setDialog(null)} />
-      )}
+      {dialog?.kind === 'status' && <StatusModal order={order} onClose={() => setDialog(null)} />}
     </>
   );
 }
 
-/** Карточка заказа для экрана «День». */
-export function OrderCard({ order, actionDate }: { order: Order; actionDate: string }) {
+/** Когда выдать: время, а если выдача в другой день — дата крупно. */
+function DueText({ order }: { order: Order }) {
+  const time = order.dueTime ? shortTime(order.dueTime) : null;
+  if (order.dueDate === order.productionDate) {
+    return time ? <>К {time}</> : null;
+  }
+  const verb = order.isConsignment ? 'Отправка' : 'Выдача';
+  return (
+    <Text span inherit fw={600} c="blue.8">
+      <IconTruckDelivery size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
+      {verb} {dayLabel(order.dueDate)}
+      {time && `, ${time}`}
+    </Text>
+  );
+}
+
+/** Карточка заказа для экрана «День» (в день приготовления) и «Обзора». */
+export function OrderCard({
+  order,
+  actionDate,
+  showProductionDate,
+}: {
+  order: Order;
+  actionDate: string;
+  /** Показать день приготовления: для списков, где заказы разных дней. */
+  showProductionDate?: boolean;
+}) {
   const done = order.status === 'Delivered' && order.isPaid;
+  const contact = [order.customerPhone].filter(Boolean).join(' · ');
   return (
     <Paper withBorder radius="md" p="sm" style={{ opacity: done ? 0.75 : 1 }}>
       <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
@@ -402,11 +451,18 @@ export function OrderCard({ order, actionDate }: { order: Order; actionDate: str
             {order.status === 'Delivered' && <OrderStatusBadge order={order} />}
           </Group>
           <Group mt={4} mb={2}>
-            <OrderStepper order={order} actionDate={actionDate} />
+            <OrderStepper order={order} />
           </Group>
           <Text size="sm" c="dimmed">
-            {order.dueTime ? `К ${shortTime(order.dueTime)} · ` : ''}
-            {order.customerPhone ?? ''}
+            {showProductionDate && (
+              <>
+                Приготовить {dayLabel(order.productionDate)}
+                {' · '}
+              </>
+            )}
+            <DueText order={order} />
+            {contact && (order.dueTime || order.dueDate !== order.productionDate ? ' · ' : '')}
+            {contact}
           </Text>
           <Text size="sm">{order.itemsSummary}</Text>
           {order.items.some((i) => i.reservedBatchId !== null) && (
@@ -443,6 +499,68 @@ export function OrderCard({ order, actionDate }: { order: Order; actionDate: str
         <OrderActions order={order} actionDate={actionDate} paymentOnly />
       </Group>
     </Paper>
+  );
+}
+
+/**
+ * Короткая строка для дня выдачи: заказ приготовлен в другой день, здесь только напоминание,
+ * что его нужно выдать или доставить, и кнопка «Выдать».
+ */
+export function DeliveryRow({ order, actionDate }: { order: Order; actionDate: string }) {
+  const { change, pending } = useChangeStatus(order);
+  const [paying, setPaying] = useState(false);
+  const produced = order.status === 'Ready' || order.status === 'Delivered';
+  const delivered = order.status === 'Delivered';
+  const verb = order.isConsignment ? 'Отправить' : 'Выдать';
+
+  return (
+    <Group className="delivery-row" justify="space-between" wrap="nowrap" gap="sm">
+      <Group gap={6} wrap="wrap" style={{ minWidth: 0 }}>
+        <IconTruckDelivery size={16} color="var(--mantine-color-gray-6)" style={{ flexShrink: 0 }} />
+        {order.dueTime && (
+          <Text size="sm" fw={600} c="gray.7">
+            {shortTime(order.dueTime)}
+          </Text>
+        )}
+        <Text size="sm" fw={500} c={delivered ? 'dimmed' : undefined} td={delivered ? 'line-through' : undefined}>
+          №{order.number} {order.customerName}
+        </Text>
+        <Text size="sm" c="dimmed">
+          {[order.customerPhone, order.itemsSummary, order.note].filter(Boolean).join(' · ')}
+        </Text>
+        <Anchor component={Link} to={`/day/${order.productionDate}`} size="xs" c="dimmed">
+          {produced ? 'приготовлен' : 'готовится'} {dayLabel(order.productionDate)}
+        </Anchor>
+        {produced && order.balance > 0 && (
+          <Text size="xs" c="orange.8">
+            к оплате {money(order.balance)}
+          </Text>
+        )}
+      </Group>
+      <Group gap={4} wrap="nowrap" style={{ flexShrink: 0 }}>
+        {order.status === 'Ready' && (
+          <Button size="compact-sm" variant="light" onClick={() => void change('Delivered').catch(() => undefined)} loading={pending}>
+            {verb}
+          </Button>
+        )}
+        {(order.status === 'New' || order.status === 'InProgress') && (
+          <Text size="xs" c="dimmed">
+            ещё не готов
+          </Text>
+        )}
+        {delivered && order.balance > 0 && (
+          <Button size="compact-sm" variant="subtle" color="orange" onClick={() => setPaying(true)}>
+            Оплата
+          </Button>
+        )}
+        {delivered && order.balance <= 0 && (
+          <Text size="xs" c="teal.8">
+            {order.isConsignment ? 'отправлен' : 'выдан'}
+          </Text>
+        )}
+      </Group>
+      {paying && <PaymentModal order={order} date={actionDate} onClose={() => setPaying(false)} />}
+    </Group>
   );
 }
 
@@ -577,8 +695,8 @@ function ShopReportModal({ order, date, onClose }: { order: Order; date: string;
       <Stack gap="sm">
         <Text size="sm" c="dimmed">
           Укажите, сколько продано. Остальное — возврат: выручка дня отправки ({shortDate(order.producedDate)}) уменьшится.
-          Возврат можно списать сразу в день отправки — тогда он никуда не переходит. Несписанный возврат появится в
-          «Остатках прошлых дней», где его можно продать или списать позже.
+          Возврат можно сразу списать. Несписанный останется остатком дня отправки: перенесите его на нужный день
+          кнопкой «Остатки», и там его можно продать.
         </Text>
         <Table verticalSpacing={6}>
           <Table.Thead>
@@ -634,7 +752,7 @@ function ShopReportModal({ order, date, onClose }: { order: Order; date: string;
           </Table.Tbody>
         </Table>
         <Checkbox
-          label="Списать весь возврат сразу, не переносить в остатки"
+          label="Списать весь возврат сразу"
           checked={allWrittenOff && rows.some((row) => row.returned > 0)}
           disabled={!rows.some((row) => row.returned > 0)}
           onChange={(event) => writeOffAll(event.currentTarget.checked)}
@@ -692,14 +810,15 @@ function RepeatModal({ order, onClose }: { order: Order; onClose: () => void }) 
 
 // ---------- Смена статуса ----------
 
-function StatusModal({ order, date, onClose }: { order: Order; date: string; onClose: () => void }) {
+function StatusModal({ order, onClose }: { order: Order; onClose: () => void }) {
   const setStatus = useAction(api.orders.setStatus, 'Статус изменён');
   const targets = allowedTargets[order.status];
   const [status, setStatusValue] = useState<OrderStatus>(targets[0]);
-  const [statusDate, setStatusDate] = useState<string>(date);
+  const [date, setDate] = useState<string>(statusDate(order, targets[0]));
 
   const produced = order.status === 'Ready' || order.status === 'Delivered';
-  const needsDate = (status === 'Ready' || status === 'Delivered') && !produced;
+  const dateLabel =
+    status === 'Ready' && !produced ? 'День приготовления' : status === 'Delivered' ? 'День выдачи' : null;
 
   const explanation: Record<OrderStatus, string> = {
     New: produced ? 'Изделия заказа будут убраны из таблицы дня, сырьё вернётся на склад.' : 'Заказ вернётся в начало.',
@@ -709,17 +828,17 @@ function StatusModal({ order, date, onClose }: { order: Order; date: string; onC
     Ready:
       order.status === 'Delivered'
         ? 'Снимается только отметка о выдаче, цифры дня не меняются.'
-        : 'Изделия попадут в таблицу выбранного дня: затраты и выручка записываются в этот день, сырьё списывается.',
+        : 'Заказ переедет на выбранный день: там его затраты и выручка, сырьё списывается.',
     Delivered: produced
       ? 'Отметка о выдаче. Цифры дня не меняются.'
-      : 'Заказ будет изготовлен и выдан в выбранный день: затраты и выручка записываются в этот день.',
+      : 'Заказ будет отмечен приготовленным в свой день приготовления (если он позже — в день выдачи) и выданным.',
     Cancelled: produced
       ? 'Изготовленные изделия останутся в таблице дня как обычный остаток: их можно продать или списать.'
       : 'Заказ останется в списке со статусом «Отменён».',
   };
 
   const save = async () => {
-    await setStatus.mutateAsync({ id: order.id, status, date: statusDate });
+    await setStatus.mutateAsync({ id: order.id, status, date });
     onClose();
   };
 
@@ -734,11 +853,15 @@ function StatusModal({ order, date, onClose }: { order: Order; date: string; onC
           label="Новый статус"
           data={targets.map((target) => ({ value: target, label: orderStatusLabel[target] }))}
           value={status}
-          onChange={(value) => value && setStatusValue(value as OrderStatus)}
+          onChange={(value) => {
+            if (!value) return;
+            setStatusValue(value as OrderStatus);
+            setDate(statusDate(order, value as OrderStatus));
+          }}
           allowDeselect={false}
         />
-        {needsDate && (
-          <DatePickerInput label="День готовности" value={statusDate} onChange={(value) => value && setStatusDate(value)} valueFormat="D MMMM YYYY" />
+        {dateLabel && (
+          <DatePickerInput label={dateLabel} value={date} onChange={(value) => value && setDate(value)} valueFormat="D MMMM YYYY" />
         )}
         <Text size="sm">{explanation[status]}</Text>
         <Group justify="flex-end" gap="sm">
@@ -776,12 +899,14 @@ const emptyItem = (): DraftItem => ({
   fromBatchId: null,
 });
 
-/** Новый заказ или изменение существующего. `defaultDate` подставляется в день выдачи нового заказа. */
+/**
+ * Новый заказ или изменение существующего. `defaultDate` — день, открытый в календаре:
+ * он подставляется в день приготовления и в день выдачи нового заказа.
+ */
 export function OrderEditor({ order, defaultDate, onClose }: { order: Order | null; defaultDate?: string; onClose: () => void }) {
   const currency = useCurrency();
   const { data: customers } = useCustomers();
   const { data: products } = useProducts(false);
-  const { data: freeStock } = useFreeStock(order?.id ?? null);
   const create = useAction(api.orders.create, 'Заказ записан');
   const update = useAction(api.orders.update, 'Заказ сохранён');
 
@@ -790,8 +915,10 @@ export function OrderEditor({ order, defaultDate, onClose }: { order: Order | nu
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [isShop, setIsShop] = useState(false);
-  const [dueDate, setDueDate] = useState<string>(order?.dueDate ?? defaultDate ?? addDays(today(), 1));
+  const [productionDate, setProductionDate] = useState<string>(order?.productionDate ?? defaultDate ?? today());
+  const [dueDate, setDueDate] = useState<string>(order?.dueDate ?? defaultDate ?? today());
   const [dueTime, setDueTime] = useState(order?.dueTime ?? '');
+  const { data: freeStock } = useFreeStock(order?.id ?? null, productionDate);
   const [prepayment, setPrepayment] = useState<number | string>('');
   const [note, setNote] = useState(order?.note ?? '');
   const [items, setItems] = useState<DraftItem[]>(
@@ -849,8 +976,17 @@ export function OrderEditor({ order, defaultDate, onClose }: { order: Order | nu
   const changeItem = (key: number, patch: Partial<DraftItem>) =>
     setItems(items.map((item) => (item.key === key ? { ...item, ...patch } : item)));
 
+  // День выдачи идёт следом за днём приготовления, если совпадал с ним или стал раньше.
+  const changeProductionDate = (value: string) => {
+    if (dueDate === productionDate || dueDate < value) setDueDate(value);
+    setProductionDate(value);
+    // Готовые изделия другого дня могут быть недоступны: выбираем заново.
+    setItems((current) => current.map((item) => ({ ...item, fromBatchId: null })));
+  };
+
   const save = async () => {
     const common = {
+      productionDate,
       dueDate,
       dueTime: dueTime ? `${dueTime.slice(0, 5)}:00` : null,
       note: note.trim() || null,
@@ -932,14 +1068,37 @@ export function OrderEditor({ order, defaultDate, onClose }: { order: Order | nu
 
         <Group gap="sm" align="flex-end" grow>
           <DatePickerInput
-            label={selectedCustomer?.isConsignment || isShop ? 'День отправки' : 'День выдачи'}
+            label="Приготовить"
+            description="В этот день — затраты и прибыль"
+            value={productionDate}
+            onChange={(value) => value && changeProductionDate(value)}
+            valueFormat="D MMMM YYYY, dd"
+            disabled={itemsLocked}
+            required
+          />
+          <DatePickerInput
+            label={selectedCustomer?.isConsignment || isShop ? 'Отправить в магазин' : 'Выдать или доставить'}
+            description="Можно позже дня приготовления"
             value={dueDate}
+            minDate={productionDate}
             onChange={(value) => value && setDueDate(value)}
             valueFormat="D MMMM YYYY, dd"
             required
           />
-          <TimePicker label="Время" value={dueTime} onChange={setDueTime} format="24h" clearable />
+          <TimePicker label="Время" description="Необязательно" value={dueTime} onChange={setDueTime} format="24h" clearable />
         </Group>
+        {itemsLocked ? (
+          <Text size="xs" c="dimmed">
+            Заказ уже приготовлен {longDate(productionDate)}. Чтобы перенести день приготовления, верните его в работу.
+          </Text>
+        ) : (
+          dueDate !== productionDate && (
+            <Text size="xs" c="blue.8">
+              {longDate(productionDate)} заказ будет в таблице дня с затратами и прибылью, а {longDate(dueDate)} — короткой
+              строкой в «Выдаче и доставке».
+            </Text>
+          )
+        )}
 
         <Text fw={600} size="sm" mt="xs">
           Что заказали
@@ -1021,7 +1180,7 @@ export function OrderEditor({ order, defaultDate, onClose }: { order: Order | nu
                     { value: 'bake', label: 'Приготовить под заказ' },
                     ...stockFor(item.productId).map((source) => ({
                       value: source.batchId,
-                      label: `Из готового, ${source.productionDate === today() ? 'сегодня' : shortDate(source.productionDate)}: ${
+                      label: `Из готового, ${dayLabel(source.productionDate)}: ${
                         source.reservedForThisOrder ? 'уже в этом заказе' : 'свободно'
                       } ${quantity(source.available)} шт`,
                     })),
