@@ -39,8 +39,15 @@ internal sealed class StockMovementRepository(AppDbContext db) : IStockMovementR
     public Task<StockMovement?> GetByIdAsync(Guid id, CancellationToken ct) =>
         db.StockMovements.FirstOrDefaultAsync(x => x.Id == id, ct);
 
-    public Task<List<StockMovement>> ListByBatchAsync(Guid batchId, CancellationToken ct) =>
-        db.StockMovements.Where(x => x.BatchId == batchId).ToListAsync(ct);
+    /// <summary>
+    /// Учитывает и несохранённые изменения этой же операции: расход, который только что
+    /// перенесли на партию или отделили от неё, тоже попадает в список.
+    /// </summary>
+    public async Task<List<StockMovement>> ListByBatchAsync(Guid batchId, CancellationToken ct)
+    {
+        await db.StockMovements.Where(x => x.BatchId == batchId).LoadAsync(ct);
+        return db.StockMovements.Local.Where(x => x.BatchId == batchId).ToList();
+    }
 
     public Task<bool> AnyForIngredientAsync(Guid ingredientId, CancellationToken ct) =>
         db.StockMovements.AnyAsync(x => x.IngredientId == ingredientId, ct);
@@ -122,7 +129,7 @@ internal sealed class CustomerRepository(AppDbContext db) : ICustomerRepository
 internal sealed class OrderRepository(AppDbContext db) : IOrderRepository
 {
     public Task<Order?> GetByIdAsync(Guid id, CancellationToken ct) =>
-        db.Orders.Include(x => x.Items).FirstOrDefaultAsync(x => x.Id == id, ct);
+        db.Orders.Include(x => x.Items).Include(x => x.Payments).FirstOrDefaultAsync(x => x.Id == id, ct);
 
     public async Task<int> NextNumberAsync(CancellationToken ct) =>
         (await db.Orders.MaxAsync(x => (int?)x.Number, ct) ?? 0) + 1;

@@ -32,7 +32,7 @@ export const orderStatusLabel: Record<OrderStatus, string> = {
   New: 'Новый',
   InProgress: 'Готовится',
   Ready: 'Готов',
-  Completed: 'Выдан',
+  Delivered: 'Выдан',
   Cancelled: 'Отменён',
 };
 
@@ -40,7 +40,7 @@ export const orderStatusColor: Record<OrderStatus, string> = {
   New: 'blue',
   InProgress: 'orange',
   Ready: 'teal',
-  Completed: 'gray',
+  Delivered: 'gray',
   Cancelled: 'red',
 };
 
@@ -64,6 +64,9 @@ export const isIsoDate = (value: string | undefined): value is string =>
 export const longDate = (date: string) => dayjs(date).format('D MMMM, dd');
 
 /** 12.11.2026 */
+/** Коротко для подписей в таблице: «25 нояб.». */
+export const dayMonth = (date: string) => dayjs(date).format('D MMM');
+
 export const shortDate = (date: string | null | undefined) => (date ? dayjs(date).format('DD.MM.YYYY') : '—');
 
 /** 15:00 из 15:00:00 */

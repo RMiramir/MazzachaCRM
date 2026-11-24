@@ -62,6 +62,12 @@ public static class CatalogEndpoints
         group.MapGet("/movements", (Guid? ingredientId, DateOnly? from, DateOnly? to, IDispatcher dispatcher, CancellationToken ct) =>
             dispatcher.Query(new GetStockMovementsQuery(ingredientId, from, to), ct));
 
+        group.MapPost("/purchases", async (RegisterPurchasesCommand command, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Ok(new { count = await dispatcher.Send(command, ct) }));
+
+        group.MapPost("/reset", async (ResetRequest request, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Ok(new { count = await dispatcher.Send(new ResetStockCommand(request.Date), ct) }));
+
         group.MapDelete("/movements/{id:guid}", async (Guid id, IDispatcher dispatcher, CancellationToken ct) =>
         {
             await dispatcher.Send(new DeleteStockMovementCommand(id), ct);
@@ -105,4 +111,6 @@ public static class CatalogEndpoints
     }
 
     public sealed record ArchiveRequest(bool Archived);
+
+    public sealed record ResetRequest(DateOnly Date);
 }

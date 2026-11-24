@@ -12,7 +12,8 @@ public sealed record PeriodDayDto(
     decimal TotalCosts,
     decimal Revenue,
     decimal Profit,
-    decimal WriteOffLoss);
+    decimal WriteOffLoss,
+    decimal Received);
 
 public sealed record PeriodTotalsDto(
     decimal ProductionCost,
@@ -25,7 +26,8 @@ public sealed record PeriodTotalsDto(
     decimal WriteOffLoss,
     decimal UnsoldValueAtPrice,
     decimal UnsoldValueAtCost,
-    decimal PotentialProfit);
+    decimal PotentialProfit,
+    decimal Received);
 
 public sealed record PeriodProductDto(
     Guid ProductId,
@@ -66,6 +68,7 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
         public decimal Revenue;
         public decimal ProfitOnSold;
         public decimal WriteOffLoss;
+        public decimal Received;
     }
 
     private sealed class ProductTotals
@@ -92,6 +95,17 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
         var expenses = await db.Expenses.Where(e => e.Date >= from && e.Date <= to).ToListAsync(ct);
         var productNames = await db.Products.ToDictionaryAsync(p => p.Id, p => p.Name, ct);
 
+        // День готовности каждого заказа: продажа в этот день — долг клиента, а не полученные деньги.
+        var readyDates = (await db.Orders
+                .Where(o => o.ProducedDate != null)
+                .Select(o => new { o.Id, o.ProducedDate })
+                .ToListAsync(ct))
+            .ToDictionary(o => o.Id, o => o.ProducedDate);
+        var payments = await db.Orders
+            .SelectMany(o => o.Payments)
+            .Where(p => p.Date >= from && p.Date <= to)
+            .ToListAsync(ct);
+
         var days = new SortedDictionary<DateOnly, DayTotals>();
         var products = new Dictionary<Guid, ProductTotals>();
 
@@ -113,6 +127,9 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
                 var day = Day(sale.Date);
                 day.Revenue += sale.Amount;
                 day.ProfitOnSold += sale.Amount - costOfSold;
+                // Продажа заказа в день готовности — это долг клиента, деньги придут оплатой.
+                if (!(batch.OrderId is { } orderId && readyDates.GetValueOrDefault(orderId) == sale.Date))
+                    day.Received += sale.Amount;
                 product.Sold += sale.Quantity;
                 product.Revenue += sale.Amount;
                 product.CostOfSold += costOfSold;
@@ -128,6 +145,9 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
         foreach (var expense in expenses)
             Day(expense.Date).Expenses += expense.Amount;
 
+        foreach (var payment in payments)
+            Day(payment.Date).Received += payment.Amount;
+
         var dayRows = days
             .Select(pair =>
             {
@@ -140,7 +160,8 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
                     totalCosts.Money(),
                     d.Revenue.Money(),
                     (d.Revenue - totalCosts).Money(),
-                    d.WriteOffLoss.Money());
+                    d.WriteOffLoss.Money(),
+                    d.Received.Money());
             })
             .ToList();
 
@@ -148,7 +169,9 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
         var expensesTotal = days.Values.Sum(d => d.Expenses);
         var revenue = days.Values.Sum(d => d.Revenue);
         var profit = revenue - productionCost - expensesTotal;
-        var unsoldAtPrice = batches.Sum(b => b.RemainingAtEndOf(to) * b.UnitPrice);
+        // Непроданное на конец периода — только то, что перенесено на его последний день: остальное уже убыток.
+        var unsold = batches.Where(b => b.IsAvailableOn(to)).ToList();
+        var unsoldAtPrice = unsold.Sum(b => b.RemainingAtEndOf(to) * b.UnitPrice);
 
         var totals = new PeriodTotalsDto(
             productionCost.Money(),
@@ -160,8 +183,9 @@ public sealed class GetPeriodReportHandler(IReadDbContext db) : IQueryHandler<Ge
             days.Values.Sum(d => d.ProfitOnSold).Money(),
             days.Values.Sum(d => d.WriteOffLoss).Money(),
             unsoldAtPrice.Money(),
-            batches.Sum(b => b.RemainingAtEndOf(to) * b.UnitCost).Money(),
-            (profit + unsoldAtPrice).Money());
+            unsold.Sum(b => b.RemainingAtEndOf(to) * b.UnitCost).Money(),
+            (profit + unsoldAtPrice).Money(),
+            days.Values.Sum(d => d.Received).Money());
 
         var productRows = products
             .Where(pair => pair.Value.Made != 0 || pair.Value.Sold != 0 || pair.Value.WrittenOff != 0)

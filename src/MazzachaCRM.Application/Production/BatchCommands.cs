@@ -2,7 +2,9 @@ using FluentValidation;
 using MazzachaCRM.Application.Abstractions;
 using MazzachaCRM.Application.Common;
 using MazzachaCRM.Domain.Common;
+using MazzachaCRM.Domain.Orders;
 using MazzachaCRM.Domain.Production;
+using Microsoft.EntityFrameworkCore;
 
 namespace MazzachaCRM.Application.Production;
 
@@ -150,14 +152,14 @@ public sealed class SetBatchSalesValidator : AbstractValidator<SetBatchSalesComm
     }
 }
 
-public sealed class SetBatchSalesHandler(IProductionBatchRepository batches)
+public sealed class SetBatchSalesHandler(IProductionBatchRepository batches, IOrderRepository orders)
     : ICommandHandler<SetBatchSalesCommand, Unit>
 {
     public async Task<Unit> Handle(SetBatchSalesCommand command, CancellationToken ct)
     {
         var batch = await batches.GetByIdAsync(command.BatchId, ct)
             ?? throw new NotFoundException("Строка не найдена.");
-        BatchRules.EnsureNotOrderBatch(batch);
+        await BatchRules.EnsureManualEntryAllowedAsync(batch, command.Date, orders, ct);
 
         batch.SetSalesForDate(command.Date, command.Entries.Select(e => new SaleEntry(e.Quantity, e.UnitPrice)));
         return Unit.Value;
@@ -178,17 +180,59 @@ public sealed class SetBatchWriteOffValidator : AbstractValidator<SetBatchWriteO
     }
 }
 
-public sealed class SetBatchWriteOffHandler(IProductionBatchRepository batches)
+public sealed class SetBatchWriteOffHandler(IProductionBatchRepository batches, IOrderRepository orders)
     : ICommandHandler<SetBatchWriteOffCommand, Unit>
 {
     public async Task<Unit> Handle(SetBatchWriteOffCommand command, CancellationToken ct)
     {
         var batch = await batches.GetByIdAsync(command.BatchId, ct)
             ?? throw new NotFoundException("Строка не найдена.");
-        BatchRules.EnsureNotOrderBatch(batch);
+        await BatchRules.EnsureManualEntryAllowedAsync(batch, command.Date, orders, ct);
 
         batch.SetWriteOffForDate(command.Date, command.Quantity, command.Reason);
         return Unit.Value;
+    }
+}
+
+// ---------- Повторить другой день ----------
+
+/// <summary>
+/// Копирует ручные строки (не заказы) из другого дня: те же изделия, количество и цена.
+/// Продажи не копируются. Возвращает число добавленных строк.
+/// </summary>
+public sealed record CopyDayCommand(DateOnly FromDate, DateOnly ToDate) : ICommand<int>;
+
+public sealed class CopyDayHandler(
+    IReadDbContext db,
+    CostingContextLoader costing,
+    BatchProductionService production)
+    : ICommandHandler<CopyDayCommand, int>
+{
+    public async Task<int> Handle(CopyDayCommand command, CancellationToken ct)
+    {
+        if (command.FromDate == command.ToDate)
+            throw new DomainException("Выберите другой день.");
+
+        var source = await db.Batches
+            .Where(b => b.ProductionDate == command.FromDate && b.OrderId == null)
+            .OrderBy(b => b.CreatedAt)
+            .ToListAsync(ct);
+        if (source.Count == 0)
+            throw new DomainException("В этот день ничего не готовили вручную, копировать нечего.");
+
+        var context = await costing.LoadTrackedAsync(ct);
+        var copied = 0;
+        foreach (var batch in source)
+        {
+            if (!context.Products.TryGetValue(batch.ProductId, out var product) || product.IsArchived)
+                continue;
+            production.Produce(context, command.ToDate, batch.ProductId, batch.Quantity, batch.UnitPrice);
+            copied++;
+        }
+
+        if (copied == 0)
+            throw new DomainException("Изделия из того дня в архиве, копировать нечего.");
+        return copied;
     }
 }
 
@@ -198,5 +242,28 @@ internal static class BatchRules
     {
         if (batch.OrderId is not null)
             throw new DomainException("Эта партия изготовлена под заказ. Меняйте её через статус заказа.");
+    }
+
+    /// <summary>
+    /// Продавать и списывать вручную можно в день изготовления и в дни, на которые остаток перенесли.
+    /// Продажа по заказу записывается в день его готовности и меняется только через заказ;
+    /// остаток, который вернул магазин, в перенесённые дни продаётся и списывается как обычно.
+    /// </summary>
+    public static async Task EnsureManualEntryAllowedAsync(
+        ProductionBatch batch, DateOnly date, IOrderRepository orders, CancellationToken ct)
+    {
+        if (batch.OrderId is { } orderId)
+        {
+            var order = await orders.GetByIdAsync(orderId, ct);
+            if (order?.ProducedDate is not { } readyDate)
+                throw new DomainException(
+                    "Эти изделия закреплены за заказом. Продажа запишется сама, когда заказ будет готов.");
+
+            if (date <= readyDate)
+                throw new DomainException(
+                    "В день готовности продажа по заказу записывается автоматически. Если магазин что-то вернул, внесите отчёт магазина в заказе.");
+        }
+
+        batch.EnsureAvailableOn(date);
     }
 }

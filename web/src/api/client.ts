@@ -3,16 +3,20 @@ import type {
   Customer,
   CustomerInput,
   Day,
+  FreeStock,
   Ingredient,
   IngredientInput,
   MarginRow,
   Order,
   OrderInput,
+  OrderScope,
   OrderStatus,
+  Overview,
   PeriodReport,
   ProductDetail,
   ProductInput,
   ProductListItem,
+  PurchaseLineInput,
   RecipeLineInput,
   SaleEntry,
   Settings,
@@ -74,7 +78,7 @@ type Created = { id: string };
 export const api = {
   settings: {
     get: () => get<Settings>('/settings'),
-    update: (body: { hourlyRate: number; currency: string }) => put<void>('/settings', body),
+    update: (body: { hourlyRate: number; currency: string; monthlyProfitGoal: number | null; businessName: string | null }) => put<void>('/settings', body),
   },
 
   ingredients: {
@@ -94,6 +98,9 @@ export const api = {
     movements: (params: { ingredientId?: string | null; from?: string | null; to?: string | null }) =>
       get<StockMovements>(`/stock/movements${query(params)}`),
     removeMovement: (id: string) => del<void>(`/stock/movements/${id}`),
+    purchases: (body: { date: string; lines: PurchaseLineInput[]; note: string | null }) =>
+      post<{ count: number }>('/stock/purchases', body),
+    reset: (date: string) => post<{ count: number }>('/stock/reset', { date }),
   },
 
   products: {
@@ -109,11 +116,15 @@ export const api = {
       laborMinutes: number;
       salePrice: number;
       lines: RecipeLineInput[];
+      costMode: 'Recipe' | 'Manual';
+      manualUnitCost: number;
     }) => post<CostPreview>('/products/cost-preview', body),
   },
 
   days: {
     get: (date: string) => get<Day>(`/days/${date}`),
+    copyFrom: ({ date, fromDate }: { date: string; fromDate: string }) =>
+      post<{ copied: number }>(`/days/${date}/copy-from/${fromDate}`),
   },
 
   batches: {
@@ -121,6 +132,11 @@ export const api = {
       post<Created>('/batches', body),
     update: ({ id, ...body }: { id: string; quantity: number; unitPrice: number }) => put<void>(`/batches/${id}`, body),
     remove: (id: string) => del<void>(`/batches/${id}`),
+    free: (forOrderId: string | null, date: string | null) => get<FreeStock[]>(`/batches/free${query({ forOrderId, date })}`),
+    carry: (body: { batchIds: string[]; toDate: string }) => post<{ count: number }>('/batches/carry', body),
+    cancelCarry: ({ id, lastDay }: { id: string; lastDay: string }) => post<void>(`/batches/${id}/cancel-carry`, { lastDay }),
+    writeOffLeftovers: (body: { batchIds: string[]; reason: string | null }) =>
+      post<{ count: number }>('/batches/write-off-leftovers', body),
     recalculateCost: (id: string) => post<void>(`/batches/${id}/recalculate-cost`),
     setSales: ({ id, date, entries }: { id: string; date: string; entries: SaleEntry[] }) =>
       put<void>(`/batches/${id}/sales/${date}`, { entries }),
@@ -141,11 +157,17 @@ export const api = {
   },
 
   orders: {
-    list: (params: { activeOnly?: boolean; from?: string | null; to?: string | null; customerId?: string | null }) =>
+    list: (params: { scope?: OrderScope; from?: string | null; to?: string | null; customerId?: string | null }) =>
       get<Order[]>(`/orders${query(params)}`),
     create: (body: OrderInput) => post<Created>('/orders', body),
-    update: ({ id, ...body }: Omit<OrderInput, 'newCustomerName' | 'newCustomerPhone' | 'customerId'> & { id: string; customerId: string }) =>
+    update: ({ id, ...body }: Omit<OrderInput, 'newCustomerName' | 'newCustomerPhone' | 'customerId' | 'prepayment'> & { id: string; customerId: string }) =>
       put<void>(`/orders/${id}`, body),
+    addPayment: ({ id, ...body }: { id: string; date: string; amount: number; note: string | null }) =>
+      post<{ id: string }>(`/orders/${id}/payments`, body),
+    removePayment: ({ id, paymentId }: { id: string; paymentId: string }) => del<void>(`/orders/${id}/payments/${paymentId}`),
+    shopReport: ({ id, ...body }: { id: string; date: string; items: { itemId: string; sold: number; writtenOff: number }[] }) =>
+      post<void>(`/orders/${id}/shop-report`, body),
+    repeat: ({ id, dueDate }: { id: string; dueDate: string }) => post<{ id: string }>(`/orders/${id}/repeat`, { dueDate }),
     setStatus: ({ id, status, date }: { id: string; status: OrderStatus; date: string }) =>
       post<void>(`/orders/${id}/status`, { status, date }),
     remove: (id: string) => del<void>(`/orders/${id}`),
@@ -154,5 +176,6 @@ export const api = {
   reports: {
     period: (from: string, to: string) => get<PeriodReport>(`/reports/period${query({ from, to })}`),
     margins: () => get<MarginRow[]>('/reports/margins'),
+    overview: (today: string) => get<Overview>(`/reports/overview${query({ today })}`),
   },
 };

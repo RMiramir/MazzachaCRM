@@ -7,7 +7,10 @@ public enum OrderStatus
     New = 1,
     InProgress = 2,
     Ready = 3,
-    Completed = 4,
+
+    /// <summary>Выдан клиенту или отправлен в магазин.</summary>
+    Delivered = 4,
+
     Cancelled = 5,
 }
 
@@ -25,7 +28,11 @@ public sealed class OrderItem : Entity
     public decimal UnitPrice { get; private set; }
     public string? Note { get; private set; }
 
-    public decimal Amount => Quantity * UnitPrice;
+    /// <summary>Сколько вернул магазин по отчёту. За возвраты клиент не платит.</summary>
+    public decimal ReturnedQuantity { get; private set; }
+
+    public decimal SoldQuantity => Quantity - ReturnedQuantity;
+    public decimal Amount => SoldQuantity * UnitPrice;
 
     internal static OrderItem Create(Guid orderId, OrderItemSpec spec) =>
         new()
@@ -36,15 +43,41 @@ public sealed class OrderItem : Entity
             UnitPrice = spec.UnitPrice,
             Note = Guard.Optional(spec.Note),
         };
+
+    internal void SetReturned(decimal returned)
+    {
+        if (returned < 0 || returned > Quantity)
+            throw new DomainException($"Возврат должен быть от 0 до {Quantity:0.###}.");
+        ReturnedQuantity = returned;
+    }
+}
+
+/// <summary>Платёж по заказу: предоплата, доплата или деньги от магазина после продажи.</summary>
+public sealed class OrderPayment : Entity
+{
+    private OrderPayment()
+    {
+    }
+
+    public Guid OrderId { get; private set; }
+    public DateOnly Date { get; private set; }
+    public decimal Amount { get; private set; }
+    public string? Note { get; private set; }
+
+    internal static OrderPayment Create(Guid orderId, DateOnly date, decimal amount, string? note) =>
+        new() { OrderId = orderId, Date = date, Amount = amount, Note = Guard.Optional(note) };
 }
 
 /// <summary>
-/// Предзаказ клиента. Когда заказ изготовлен («Готов»), под него создаются партии;
-/// когда выдан, по ним записывается продажа, и она попадает в выручку дня выдачи.
+/// Заказ клиента или поставка в магазин. У заказа два дня: день приготовления, в который
+/// записываются его затраты и выручка, и день выдачи (доставки), который может быть позже.
+/// Деньги учитываются отдельно — платежами в те дни, когда они пришли. Разница между суммой
+/// заказа и платежами — долг.
 /// </summary>
 public sealed class Order : AggregateRoot
 {
     private readonly List<OrderItem> _items = [];
+    private readonly List<OrderPayment> _payments = [];
 
     private Order()
     {
@@ -52,29 +85,48 @@ public sealed class Order : AggregateRoot
 
     public int Number { get; private set; }
     public Guid CustomerId { get; private set; }
+
+    /// <summary>
+    /// День приготовления: в нём заказ показывается подробно, в нём считаются его затраты и прибыль.
+    /// Когда заказ готов, совпадает с <see cref="ProducedDate"/>.
+    /// </summary>
+    public DateOnly ProductionDate { get; private set; }
+
+    /// <summary>День выдачи или доставки. Не раньше дня приготовления.</summary>
     public DateOnly DueDate { get; private set; }
+
     public TimeOnly? DueTime { get; private set; }
-    public decimal Prepayment { get; private set; }
     public string? Note { get; private set; }
     public OrderStatus Status { get; private set; }
     public DateTime CreatedAt { get; private set; }
+
+    /// <summary>День готовности: в него записываются затраты и выручка заказа.</summary>
     public DateOnly? ProducedDate { get; private set; }
-    public DateOnly? CompletedDate { get; private set; }
+
+    public DateOnly? DeliveredDate { get; private set; }
+
+    /// <summary>Когда магазин сообщил, сколько продано и сколько вернули.</summary>
+    public DateOnly? ReportedDate { get; private set; }
 
     public IReadOnlyCollection<OrderItem> Items => _items.AsReadOnly();
+    public IReadOnlyCollection<OrderPayment> Payments => _payments.AsReadOnly();
 
     public decimal Total => _items.Sum(i => i.Amount);
-    public decimal Balance => Total - Prepayment;
+    public decimal Paid => _payments.Sum(p => p.Amount);
+    public decimal Balance => Total - Paid;
 
     /// <summary>Заказ изготовлен: под него существуют партии.</summary>
-    public bool IsProduced => Status is OrderStatus.Ready or OrderStatus.Completed;
+    public bool IsProduced => Status is OrderStatus.Ready or OrderStatus.Delivered;
+
+    /// <summary>Выдан и полностью оплачен.</summary>
+    public bool IsPaid => Status == OrderStatus.Delivered && Balance <= 0;
 
     public static Order Create(
         int number,
         Guid customerId,
+        DateOnly productionDate,
         DateOnly dueDate,
         TimeOnly? dueTime,
-        decimal prepayment,
         string? note,
         IEnumerable<OrderItemSpec> items)
     {
@@ -84,17 +136,23 @@ public sealed class Order : AggregateRoot
             Status = OrderStatus.New,
             CreatedAt = DateTime.UtcNow,
         };
-        order.UpdateDetails(customerId, dueDate, dueTime, prepayment, note);
+        order.UpdateDetails(customerId, productionDate, dueDate, dueTime, note);
         order.SetItems(items);
         return order;
     }
 
-    public void UpdateDetails(Guid customerId, DateOnly dueDate, TimeOnly? dueTime, decimal prepayment, string? note)
+    public void UpdateDetails(Guid customerId, DateOnly productionDate, DateOnly dueDate, TimeOnly? dueTime, string? note)
     {
+        if (dueDate < productionDate)
+            throw new DomainException("День выдачи не может быть раньше дня приготовления.");
+        if (IsProduced && productionDate != ProductionDate)
+            throw new DomainException(
+                "Заказ уже приготовлен, его затраты и выручка записаны в день приготовления. Чтобы перенести этот день, верните заказ в работу.");
+
         CustomerId = customerId;
+        ProductionDate = productionDate;
         DueDate = dueDate;
         DueTime = dueTime;
-        Prepayment = Guard.NotNegative(prepayment, "Предоплата");
         Note = Guard.Optional(note);
     }
 
@@ -126,6 +184,41 @@ public sealed class Order : AggregateRoot
         return current.SequenceEqual(incoming);
     }
 
+    public OrderPayment AddPayment(DateOnly date, decimal amount, string? note)
+    {
+        Guard.Positive(amount, "Сумма оплаты");
+        var payment = OrderPayment.Create(Id, date, amount, note);
+        _payments.Add(payment);
+        return payment;
+    }
+
+    public void RemovePayment(Guid paymentId)
+    {
+        var payment = _payments.FirstOrDefault(p => p.Id == paymentId)
+            ?? throw new DomainException("Оплата не найдена.");
+        _payments.Remove(payment);
+    }
+
+    /// <summary>
+    /// Отчёт магазина: сколько вернули по каждой позиции. Возвращать можно только после изготовления.
+    /// </summary>
+    public void RecordReturns(DateOnly date, IReadOnlyDictionary<Guid, decimal> returnedByItem)
+    {
+        if (!IsProduced)
+            throw new DomainException("Отчёт магазина вносится после того, как поставка изготовлена и отправлена.");
+        if (ProducedDate is { } produced && date < produced)
+            throw new DomainException("Дата отчёта не может быть раньше дня отправки.");
+
+        foreach (var (itemId, returned) in returnedByItem)
+        {
+            var item = _items.FirstOrDefault(i => i.Id == itemId)
+                ?? throw new DomainException("Позиция заказа не найдена.");
+            item.SetReturned(returned);
+        }
+
+        ReportedDate = date;
+    }
+
     public void ChangeStatus(OrderStatus status, DateOnly date)
     {
         if (status == Status)
@@ -133,29 +226,46 @@ public sealed class Order : AggregateRoot
         if (!CanTransition(Status, status))
             throw new DomainException($"Нельзя перевести заказ из статуса «{Title(Status)}» в «{Title(status)}».");
 
+        var wasProduced = IsProduced;
         Status = status;
         switch (status)
         {
             case OrderStatus.Ready:
-                ProducedDate ??= date;
-                CompletedDate = null;
+                // Готов в указанный день: туда переезжает и день приготовления.
+                if (!wasProduced)
+                    MarkProduced(date);
+                DeliveredDate = null;
                 break;
-            case OrderStatus.Completed:
-                ProducedDate ??= date;
-                CompletedDate = date;
+            case OrderStatus.Delivered:
+                // Выдан, не отмеченный готовым: приготовлен в свой день, если тот уже наступил.
+                if (!wasProduced)
+                    MarkProduced(ProductionDate <= date ? ProductionDate : date);
+                DeliveredDate = date < ProducedDate!.Value ? ProducedDate : date;
                 break;
             default:
+                // Изготовленное отменено или возвращено в работу: возвраты по отчёту больше не действуют.
                 ProducedDate = null;
-                CompletedDate = null;
+                DeliveredDate = null;
+                ReportedDate = null;
+                foreach (var item in _items)
+                    item.SetReturned(0);
                 break;
         }
+    }
+
+    private void MarkProduced(DateOnly date)
+    {
+        ProducedDate = date;
+        ProductionDate = date;
+        if (DueDate < date)
+            DueDate = date;
     }
 
     public static bool CanTransition(OrderStatus from, OrderStatus to) =>
         from switch
         {
             OrderStatus.New or OrderStatus.InProgress or OrderStatus.Ready => to != from,
-            OrderStatus.Completed => to == OrderStatus.Ready,
+            OrderStatus.Delivered => to == OrderStatus.Ready,
             OrderStatus.Cancelled => to == OrderStatus.New,
             _ => false,
         };
@@ -166,7 +276,7 @@ public sealed class Order : AggregateRoot
             OrderStatus.New => "Новый",
             OrderStatus.InProgress => "Готовится",
             OrderStatus.Ready => "Готов",
-            OrderStatus.Completed => "Выдан",
+            OrderStatus.Delivered => "Выдан",
             OrderStatus.Cancelled => "Отменён",
             _ => status.ToString(),
         };
@@ -174,7 +284,7 @@ public sealed class Order : AggregateRoot
 
 public interface IOrderRepository
 {
-    /// <summary>Заказ вместе с позициями.</summary>
+    /// <summary>Заказ вместе с позициями и оплатами.</summary>
     Task<Order?> GetByIdAsync(Guid id, CancellationToken ct);
 
     Task<int> NextNumberAsync(CancellationToken ct);

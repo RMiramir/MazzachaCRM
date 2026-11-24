@@ -90,6 +90,9 @@ public sealed class ProductCostCalculator
             throw new DomainException($"Состав зациклен: изделие «{product.Name}» входит само в себя через другие изделия.");
 
         var total = LaborCost(product.LaborMinutes);
+        if (product.CostMode == CostMode.Manual)
+            total = new CostBreakdown(product.ManualUnitCost * product.YieldQuantity, 0, 0);
+
         foreach (var line in product.Lines)
             total += LineCost(new RecipeLineSpec(line.IngredientId, line.ComponentProductId, line.Quantity), path);
 

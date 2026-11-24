@@ -35,8 +35,8 @@ public static class OrderEndpoints
     {
         var group = api.MapGroup("/orders").WithTags("Заказы");
 
-        group.MapGet("/", (bool? activeOnly, DateOnly? from, DateOnly? to, Guid? customerId, IDispatcher dispatcher, CancellationToken ct) =>
-            dispatcher.Query(new GetOrdersQuery(activeOnly ?? false, from, to, customerId), ct));
+        group.MapGet("/", (OrderScope? scope, DateOnly? from, DateOnly? to, Guid? customerId, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.Query(new GetOrdersQuery(scope ?? OrderScope.All, from, to, customerId), ct));
 
         group.MapGet("/{id:guid}", (Guid id, IDispatcher dispatcher, CancellationToken ct) =>
             dispatcher.Query(new GetOrderQuery(id), ct));
@@ -61,7 +61,31 @@ public static class OrderEndpoints
             await dispatcher.Send(new DeleteOrderCommand(id), ct);
             return Results.NoContent();
         });
+
+        group.MapPost("/{id:guid}/payments", async (Guid id, PaymentRequest request, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Ok(new { id = await dispatcher.Send(new AddOrderPaymentCommand(id, request.Date, request.Amount, request.Note), ct) }));
+
+        group.MapDelete("/{id:guid}/payments/{paymentId:guid}", async (Guid id, Guid paymentId, IDispatcher dispatcher, CancellationToken ct) =>
+        {
+            await dispatcher.Send(new RemoveOrderPaymentCommand(id, paymentId), ct);
+            return Results.NoContent();
+        });
+
+        group.MapPost("/{id:guid}/shop-report", async (Guid id, ShopReportRequest request, IDispatcher dispatcher, CancellationToken ct) =>
+        {
+            await dispatcher.Send(new SubmitShopReportCommand(id, request.Date, request.Items ?? []), ct);
+            return Results.NoContent();
+        });
+
+        group.MapPost("/{id:guid}/repeat", async (Guid id, RepeatRequest request, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Ok(new { id = await dispatcher.Send(new RepeatOrderCommand(id, request.DueDate), ct) }));
     }
+
+    public sealed record PaymentRequest(DateOnly Date, decimal Amount, string? Note);
+
+    public sealed record ShopReportRequest(DateOnly Date, IReadOnlyList<ShopReportItemInput>? Items);
+
+    public sealed record RepeatRequest(DateOnly DueDate);
 
     public sealed record StatusRequest(OrderStatus Status, DateOnly Date);
 }

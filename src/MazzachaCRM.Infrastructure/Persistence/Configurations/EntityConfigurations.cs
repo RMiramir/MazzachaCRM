@@ -74,6 +74,7 @@ internal sealed class ProductionBatchConfiguration : IEntityTypeConfiguration<Pr
 
         builder.HasIndex(x => x.ProductionDate);
         builder.HasIndex(x => x.ClosedOn);
+        builder.HasIndex(x => x.CarriedUntil);
     }
 }
 
@@ -125,10 +126,24 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(x => x.Note).HasMaxLength(1000);
         builder.HasIndex(x => x.Number).IsUnique();
         builder.HasIndex(x => x.DueDate);
+        builder.HasIndex(x => x.ProductionDate);
         builder.HasOne<Customer>().WithMany().HasForeignKey(x => x.CustomerId).OnDelete(DeleteBehavior.Restrict);
 
         builder.HasMany(x => x.Items).WithOne().HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(x => x.Items).UsePropertyAccessMode(PropertyAccessMode.Field);
+
+        builder.HasMany(x => x.Payments).WithOne().HasForeignKey(x => x.OrderId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(x => x.Payments).UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+
+internal sealed class OrderPaymentConfiguration : IEntityTypeConfiguration<OrderPayment>
+{
+    public void Configure(EntityTypeBuilder<OrderPayment> builder)
+    {
+        builder.ToTable("OrderPayments");
+        builder.Property(x => x.Note).HasMaxLength(300);
+        builder.HasIndex(x => x.Date);
     }
 }
 
@@ -148,5 +163,6 @@ internal sealed class AppSettingsConfiguration : IEntityTypeConfiguration<AppSet
     {
         builder.ToTable("Settings");
         builder.Property(x => x.Currency).HasMaxLength(20).IsRequired();
+        builder.Property(x => x.BusinessName).HasMaxLength(100);
     }
 }

@@ -14,7 +14,26 @@ public static class DayEndpoints
                 dispatcher.Query(new GetDayQuery(date), ct))
             .WithTags("День");
 
+        api.MapPost("/days/{date}/copy-from/{fromDate}", async (DateOnly date, DateOnly fromDate, IDispatcher dispatcher, CancellationToken ct) =>
+                Results.Ok(new { copied = await dispatcher.Send(new CopyDayCommand(fromDate, date), ct) }))
+            .WithTags("День");
+
         var batches = api.MapGroup("/batches").WithTags("День");
+
+        batches.MapGet("/free", (Guid? forOrderId, DateOnly? date, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.Query(new GetFreeStockQuery(forOrderId, date), ct));
+
+        batches.MapPost("/carry", async (CarryLeftoversCommand command, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Ok(new { count = await dispatcher.Send(command, ct) }));
+
+        batches.MapPost("/write-off-leftovers", async (WriteOffLeftoversCommand command, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Ok(new { count = await dispatcher.Send(command, ct) }));
+
+        batches.MapPost("/{id:guid}/cancel-carry", async (Guid id, CancelCarryRequest request, IDispatcher dispatcher, CancellationToken ct) =>
+        {
+            await dispatcher.Send(new CancelCarryCommand(id, request.LastDay), ct);
+            return Results.NoContent();
+        });
 
         batches.MapPost("/", async (CreateBatchCommand command, IDispatcher dispatcher, CancellationToken ct) =>
             Results.Ok(new { id = await dispatcher.Send(command, ct) }));
@@ -76,9 +95,14 @@ public static class DayEndpoints
 
         group.MapGet("/margins", (IDispatcher dispatcher, CancellationToken ct) =>
             dispatcher.Query(new GetMarginReportQuery(), ct));
+
+        group.MapGet("/overview", (DateOnly? today, IDispatcher dispatcher, CancellationToken ct) =>
+            dispatcher.Query(new GetOverviewQuery(today ?? DateOnly.FromDateTime(DateTime.Now)), ct));
     }
 
     public sealed record SalesRequest(IReadOnlyList<SaleEntryInput>? Entries);
 
     public sealed record WriteOffRequest(decimal Quantity, string? Reason);
+
+    public sealed record CancelCarryRequest(DateOnly LastDay);
 }

@@ -1,3 +1,4 @@
+using MazzachaCRM.Application.Customers;
 using MazzachaCRM.Application.Ingredients;
 using MazzachaCRM.Application.Production;
 using MazzachaCRM.Application.Products;
@@ -143,11 +144,23 @@ public class DemoScenarioTests : IAsyncLifetime
         Assert.Equal(100m, Stock("Сливки 33%"));
         // Стаканы: закуплено 50, ушло 32.
         Assert.Equal(18m, Stock("Стакан для трайфла"));
-        // Мука: 5000 − 325 − 500 − три основы по 600.
-        Assert.Equal(2375m, Stock("Мука"));
+        // Мука: 5000 − 325 − 500 − три основы по 600 − 500 на поставку маффинов в магазин.
+        Assert.Equal(1875m, Stock("Мука"));
 
         Assert.True(ingredients.Single(i => i.Name == "Сливки 33%").IsLowStock);
         Assert.True(ingredients.Single(i => i.Name == "Стакан для трайфла").IsLowStock);
+    }
+
+    [Fact]
+    public async Task Shop_shipment_leaves_a_debt_for_the_unpaid_part()
+    {
+        var day = await _app.Query(new GetDayQuery(Day3));
+
+        // 20 проданных маффинов по 3,25 = 65, магазин заплатил 30.
+        Assert.Equal(35m, day.Summary.DebtsTotal);
+        var shop = Assert.Single(await _app.Query(new GetCustomersQuery("Магазин")));
+        Assert.True(shop.IsConsignment);
+        Assert.Equal(35m, shop.Debt);
     }
 
     [Fact]

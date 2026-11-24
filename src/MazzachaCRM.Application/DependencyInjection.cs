@@ -2,6 +2,7 @@ using System.Globalization;
 using FluentValidation;
 using MazzachaCRM.Application.Abstractions;
 using MazzachaCRM.Application.Common;
+using MazzachaCRM.Application.Orders;
 using MazzachaCRM.Application.Production;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -16,6 +17,7 @@ public static class DependencyInjection
         services.AddScoped<IDispatcher, Dispatcher>();
         services.AddScoped<CostingContextLoader>();
         services.AddScoped<BatchProductionService>();
+        services.AddScoped<OrderStockService>();
 
         // Сообщения валидации на русском.
         ValidatorOptions.Global.LanguageManager.Culture = new CultureInfo("ru");

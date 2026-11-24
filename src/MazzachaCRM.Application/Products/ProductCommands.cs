@@ -24,7 +24,9 @@ public sealed record CreateProductCommand(
     decimal LaborMinutes,
     decimal SalePrice,
     string? Note,
-    IReadOnlyList<RecipeLineInput> Lines) : ICommand<Guid>;
+    IReadOnlyList<RecipeLineInput> Lines,
+    CostMode CostMode = CostMode.Recipe,
+    decimal ManualUnitCost = 0) : ICommand<Guid>;
 
 public sealed class CreateProductValidator : AbstractValidator<CreateProductCommand>
 {
@@ -37,7 +39,12 @@ public sealed class CreateProductValidator : AbstractValidator<CreateProductComm
         RuleFor(x => x.LaborMinutes).GreaterThanOrEqualTo(0).WithName("Время работы");
         RuleFor(x => x.SalePrice).GreaterThanOrEqualTo(0).WithName("Цена продажи");
         RuleFor(x => x.Note).MaximumLength(1000).WithName("Заметка");
-        RuleFor(x => x.Lines).NotEmpty().WithMessage("Добавьте в состав хотя бы один продукт.");
+        RuleFor(x => x.CostMode).IsInEnum().WithName("Способ расчёта");
+        RuleFor(x => x.ManualUnitCost).GreaterThanOrEqualTo(0).WithName("Себестоимость");
+        RuleFor(x => x.Lines)
+            .NotEmpty()
+            .When(x => x.CostMode == CostMode.Recipe)
+            .WithMessage("Добавьте в состав хотя бы один продукт или укажите себестоимость вручную.");
         RuleForEach(x => x.Lines).ChildRules(line =>
             line.RuleFor(l => l.Quantity).GreaterThan(0).WithName("Количество в составе"));
     }
@@ -59,7 +66,9 @@ public sealed class CreateProductHandler(IProductRepository products, CostingCon
             command.LaborMinutes,
             command.SalePrice,
             command.Note,
-            command.Lines.Select(l => l.ToSpec()));
+            (command.Lines ?? []).Select(l => l.ToSpec()),
+            command.CostMode,
+            command.ManualUnitCost);
 
         // Проверяет, что все компоненты существуют и состав не зациклен.
         var context = await costing.LoadTrackedAsync(ct);
@@ -81,7 +90,9 @@ public sealed record UpdateProductCommand(
     decimal LaborMinutes,
     decimal SalePrice,
     string? Note,
-    IReadOnlyList<RecipeLineInput> Lines) : ICommand<Unit>;
+    IReadOnlyList<RecipeLineInput> Lines,
+    CostMode CostMode = CostMode.Recipe,
+    decimal ManualUnitCost = 0) : ICommand<Unit>;
 
 public sealed class UpdateProductValidator : AbstractValidator<UpdateProductCommand>
 {
@@ -94,7 +105,12 @@ public sealed class UpdateProductValidator : AbstractValidator<UpdateProductComm
         RuleFor(x => x.LaborMinutes).GreaterThanOrEqualTo(0).WithName("Время работы");
         RuleFor(x => x.SalePrice).GreaterThanOrEqualTo(0).WithName("Цена продажи");
         RuleFor(x => x.Note).MaximumLength(1000).WithName("Заметка");
-        RuleFor(x => x.Lines).NotEmpty().WithMessage("Добавьте в состав хотя бы один продукт.");
+        RuleFor(x => x.CostMode).IsInEnum().WithName("Способ расчёта");
+        RuleFor(x => x.ManualUnitCost).GreaterThanOrEqualTo(0).WithName("Себестоимость");
+        RuleFor(x => x.Lines)
+            .NotEmpty()
+            .When(x => x.CostMode == CostMode.Recipe)
+            .WithMessage("Добавьте в состав хотя бы один продукт или укажите себестоимость вручную.");
         RuleForEach(x => x.Lines).ChildRules(line =>
             line.RuleFor(l => l.Quantity).GreaterThan(0).WithName("Количество в составе"));
     }
@@ -130,7 +146,9 @@ public sealed class UpdateProductHandler(
             command.LaborMinutes,
             command.SalePrice,
             command.Note,
-            command.Lines.Select(l => l.ToSpec()));
+            (command.Lines ?? []).Select(l => l.ToSpec()),
+            command.CostMode,
+            command.ManualUnitCost);
 
         var context = await costing.LoadTrackedAsync(ct);
         var calculator = context.CalculatorWith(product);

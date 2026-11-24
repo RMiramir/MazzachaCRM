@@ -4,18 +4,25 @@ import {
   IconCake,
   IconCalendarEvent,
   IconChartBar,
+  IconChartLine,
   IconClipboardList,
   IconPackages,
   IconSettings,
   IconUsers,
 } from '@tabler/icons-react';
+import dayjs from 'dayjs';
 import type { ReactNode } from 'react';
 import { Navigate, NavLink as RouterLink, Route, Routes, useLocation } from 'react-router-dom';
-import { useIngredients, useOrders } from './api/hooks';
+import { useIngredients, useOrders, useSettings } from './api/hooks';
+import { useEffect } from 'react';
+
+/** Название программы. Название кондитерской задаётся в настройках. */
+export const PRODUCT_NAME = 'Сладкий учёт';
 import { CustomersPage } from './pages/CustomersPage';
 import { DayPage } from './pages/DayPage';
 import { IngredientsPage } from './pages/IngredientsPage';
 import { OrdersPage } from './pages/OrdersPage';
+import { OverviewPage } from './pages/OverviewPage';
 import { ProductsPage } from './pages/ProductsPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -29,14 +36,20 @@ interface NavItem {
 
 export function App() {
   const [opened, { toggle, close }] = useDisclosure();
+  const businessName = useSettings().data?.businessName ?? null;
+
+  useEffect(() => {
+    document.title = businessName ? `${businessName} · ${PRODUCT_NAME}` : PRODUCT_NAME;
+  }, [businessName]);
   const location = useLocation();
 
   // Счётчики в меню: активные заказы и продукты, которые заканчиваются.
-  const activeOrders = useOrders({ activeOnly: true }).data?.length ?? 0;
+  const activeOrders = useOrders({ scope: 'Active' }).data?.length ?? 0;
   const lowStock = useIngredients().data?.filter((i) => i.isLowStock || i.isOutOfStock).length ?? 0;
 
   const items: NavItem[] = [
     { to: '/day', label: 'День', icon: <IconCalendarEvent size={20} /> },
+    { to: '/overview', label: 'Обзор', icon: <IconChartLine size={20} /> },
     {
       to: '/orders',
       label: 'Заказы',
@@ -74,8 +87,13 @@ export function App() {
           <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Меню" />
           <img src="/favicon.svg" alt="" width={26} height={26} />
           <Text fw={700} fz="lg">
-            Mazzacha CRM
+            {businessName ?? PRODUCT_NAME}
           </Text>
+          {businessName && (
+            <Text size="sm" c="dimmed" visibleFrom="xs">
+              {PRODUCT_NAME}
+            </Text>
+          )}
         </Group>
       </AppShell.Header>
 
@@ -94,12 +112,16 @@ export function App() {
             mb={4}
           />
         ))}
+        <Text size="xs" c="dimmed" mt="auto" pt="sm" title="Когда собран интерфейс. После обновления здесь должна быть новая дата.">
+          Версия от {dayjs(__BUILD_TIME__).format('D MMMM YYYY, HH:mm')}
+        </Text>
       </AppShell.Navbar>
 
       <AppShell.Main>
         <Routes>
           <Route path="/" element={<Navigate to="/day" replace />} />
           <Route path="/day/:date?" element={<DayPage />} />
+          <Route path="/overview" element={<OverviewPage />} />
           <Route path="/orders" element={<OrdersPage />} />
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/ingredients" element={<IngredientsPage />} />

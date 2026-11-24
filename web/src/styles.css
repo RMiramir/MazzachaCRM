@@ -28,13 +28,18 @@ body {
   white-space: normal;
 }
 
-.table-scroll th:first-child,
+.table-scroll th.name-cell,
 .table-scroll td.name-cell {
-  min-width: 170px;
+  min-width: 150px;
 }
 
 .table-scroll td {
   vertical-align: middle;
+}
+
+/* Итоговая строка по заказам: слегка выделена, чтобы отличаться от витрины. */
+.orders-row td {
+  background: #fbf5f8;
 }
 
 .total-row td {
@@ -45,4 +50,14 @@ body {
 
 .nav-link {
   border-radius: var(--mantine-radius-md);
+}
+
+/* Строка выдачи: неяркая, в одну строку, с разделителем. */
+.delivery-row {
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--mantine-color-gray-2);
+}
+
+.delivery-row:last-child {
+  border-bottom: none;
 }

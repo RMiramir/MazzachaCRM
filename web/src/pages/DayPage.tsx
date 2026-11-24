@@ -3,9 +3,11 @@ import {
   Anchor,
   Badge,
   Button,
+  Checkbox,
   Group,
   Menu,
   Modal,
+  Paper,
   Select,
   SimpleGrid,
   Stack,
@@ -16,8 +18,11 @@ import {
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import {
+  IconArrowBackUp,
+  IconArrowForwardUp,
   IconChevronLeft,
   IconChevronRight,
+  IconCopy,
   IconDotsVertical,
   IconPlus,
   IconRefresh,
@@ -31,17 +36,16 @@ import { api } from '../api/client';
 import { useAction, useCurrency, useDay, useProducts } from '../api/hooks';
 import type { Cost, Day, DayBatch, DayCarryOver, SaleEntry } from '../api/types';
 import { InlineNumber, NumberField } from '../components/inputs';
+import { DeliveryRow, OrderCard, OrderEditor } from '../components/orders';
 import { EmptyState, Loading, PageHeader, Profit, Section, StatCard, useConfirm } from '../components/ui';
 import {
   addDays,
+  dayMonth,
   isIsoDate,
   longDate,
   money,
-  orderStatusColor,
-  orderStatusLabel,
   quantity,
   shortDate,
-  shortTime,
   toNumber,
   today,
 } from '../lib/format';
@@ -67,8 +71,13 @@ export function DayPage() {
 
   const [salesTarget, setSalesTarget] = useState<BatchTarget | null>(null);
   const [writeOffTarget, setWriteOffTarget] = useState<BatchTarget | null>(null);
+  const [leftoversDialog, setLeftoversDialog] = useState<'outgoing' | 'incoming' | null>(null);
 
   const go = (next: string) => navigate(`/day/${next}`);
+
+  // Готовность и оплаты из будущего дня записываются сегодняшним числом.
+  const actionDate = date <= today() ? date : today();
+  const copyDay = useAction(api.days.copyFrom, 'Строки вчерашнего дня добавлены');
 
   return (
     <Stack gap="md">
@@ -99,7 +108,29 @@ export function DayPage() {
         <>
           <Summary day={day} currency={currency} />
 
-          <Section title="Приготовлено за день">
+          <DayOrders day={day} actionDate={actionDate} />
+
+          {day.leftovers.length > 0 && <PendingLeftovers day={day} onOpen={() => setLeftoversDialog('incoming')} />}
+
+          <Section
+            title="Приготовлено за день"
+            aside={
+              <Group gap="xs">
+                <CarryButton day={day} onOpen={() => setLeftoversDialog('outgoing')} />
+                {day.batches.every((b) => b.orderId !== null) && (
+                  <Button
+                    variant="subtle"
+                    size="compact-sm"
+                    leftSection={<IconCopy size={14} />}
+                    onClick={() => copyDay.mutate({ date, fromDate: addDays(date, -1) })}
+                    loading={copyDay.isPending}
+                  >
+                    Повторить вчерашнее
+                  </Button>
+                )}
+              </Group>
+            }
+          >
             {day.batches.length > 0 && (
               <BatchesTable day={day} onSales={setSalesTarget} onWriteOff={setWriteOffTarget} />
             )}
@@ -108,10 +139,10 @@ export function DayPage() {
 
           {day.carryOver.length > 0 && (
             <Section
-              title="Остатки прошлых дней"
+              title="Перенесено с прошлых дней"
               aside={
                 <Text size="sm" c="dimmed">
-                  То, что не продали раньше: можно продать сегодня или списать
+                  Затраты на них — в дне приготовления, здесь только выручка
                 </Text>
               }
             >
@@ -119,15 +150,17 @@ export function DayPage() {
             </Section>
           )}
 
-          <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-            <ExpensesSection day={day} currency={currency} />
-            <OrdersSection day={day} />
-          </SimpleGrid>
+          <ExpensesSection day={day} currency={currency} />
+
+          {day.deliveries.length > 0 && <Deliveries day={day} actionDate={actionDate} />}
         </>
       )}
 
       {salesTarget && <SalesModal date={date} target={salesTarget} onClose={() => setSalesTarget(null)} />}
       {writeOffTarget && <WriteOffModal date={date} target={writeOffTarget} onClose={() => setWriteOffTarget(null)} />}
+      {day && leftoversDialog && (
+        <LeftoversModal day={day} mode={leftoversDialog} onClose={() => setLeftoversDialog(null)} />
+      )}
     </Stack>
   );
 }
@@ -136,59 +169,88 @@ export function DayPage() {
 
 function Summary({ day, currency }: { day: Day; currency: string }) {
   const s = day.summary;
-  const costParts = [
-    s.expenses > 0 ? `производство ${money(s.productionCost)}, общие расходы ${money(s.expenses)}` : null,
-    s.laborCost > 0 ? `в том числе работа ${money(s.laborCost)}` : null,
-  ].filter(Boolean);
+  const showcase = s.received - s.receivedFromOrders;
 
   return (
-    <div>
-      <SimpleGrid cols={{ base: 2, md: 4 }} spacing="md">
-        <StatCard label="Затраты" value={s.totalCosts} currency={currency} hint={costParts.join(' · ') || 'себестоимость приготовленного'} />
-        <StatCard label="Выручка" value={s.revenue} currency={currency} hint="всё, что продано за этот день" />
-        <StatCard label="Прибыль дня" value={s.profit} currency={currency} signed hint="выручка минус затраты" />
-        <StatCard
-          label="Потенциальная прибыль"
-          value={s.potentialProfit}
-          currency={currency}
-          signed
-          hint={`если продать всё приготовленное: выручка ${money(s.potentialRevenue)}`}
-        />
-      </SimpleGrid>
+    <SimpleGrid cols={{ base: 2, md: 4 }} spacing="md">
+      <StatCard
+        label="Должны по заказам"
+        value={s.dayOrdersBalance}
+        currency={currency}
+        hint={
+          <>
+            заказы этого дня
+            {s.debtsTotal > 0 && (
+              <>
+                {' · '}
+                <Anchor component={Link} to="/orders?scope=Unpaid" size="xs">
+                  всего долгов {money(s.debtsTotal)}
+                </Anchor>
+              </>
+            )}
+          </>
+        }
+      />
+      <StatCard
+        label="Получено денег"
+        value={s.received}
+        currency={currency}
+        hint={
+          s.receivedFromOrders > 0
+            ? `оплаты заказов ${money(s.receivedFromOrders)}, витрина ${money(showcase)}`
+            : 'продажи с витрины и оплаты заказов'
+        }
+      />
+      <StatCard
+        label="Потенциальная прибыль"
+        value={s.potentialProfit}
+        currency={currency}
+        signed
+        hint={s.unsoldValueAtPrice > 0 ? `если продать остаток на ${money(s.unsoldValueAtPrice)}` : 'всё продано'}
+      />
+      <StatCard
+        label="Фактическая прибыль"
+        value={s.actualProfit}
+        currency={currency}
+        signed
+        hint={`выручка ${money(s.revenue)} − затраты ${money(s.totalCosts)}${s.unsoldValueAtCost > 0 ? '; непроданное уже в затратах' : ''}`}
+      />
+    </SimpleGrid>
+  );
+}
 
-      <Group gap="xl" mt="sm" px={4}>
-        <Text size="sm">
-          <Text span c="dimmed">
-            Прибыль с проданного:{' '}
-          </Text>
-          <Profit value={s.profitOnSold} fw={600} />
+// ---------- Заказы на день ----------
+
+function DayOrders({ day, actionDate }: { day: Day; actionDate: string }) {
+  const [creating, setCreating] = useState(false);
+  return (
+    <Section
+      title="Заказы и поставки"
+      aside={
+        <Group gap="sm">
+          <Anchor component={Link} to="/orders" size="sm">
+            Все заказы
+          </Anchor>
+          <Button size="compact-md" leftSection={<IconPlus size={16} />} onClick={() => setCreating(true)}>
+            Новый заказ
+          </Button>
+        </Group>
+      }
+    >
+      {day.orders.length === 0 ? (
+        <Text size="sm" c="dimmed">
+          На этот день заказов нет. Здесь видны заказы и поставки, которые готовят в этот день: их затраты и прибыль
+          считаются здесь. Если выдать нужно позже, в день выдачи заказ будет короткой строкой внизу.
         </Text>
-        {s.unsoldValueAtPrice > 0 && (
-          <Text size="sm">
-            <Text span c="dimmed">
-              Не продано товара на{' '}
-            </Text>
-            <Text span fw={600}>
-              {money(s.unsoldValueAtPrice)}
-            </Text>
-            <Text span c="dimmed">
-              {' '}
-              (по себестоимости {money(s.unsoldValueAtCost)})
-            </Text>
-          </Text>
-        )}
-        {s.writeOffLoss > 0 && (
-          <Text size="sm">
-            <Text span c="dimmed">
-              Списано на{' '}
-            </Text>
-            <Text span fw={600} c="red.7">
-              {money(s.writeOffLoss)}
-            </Text>
-          </Text>
-        )}
-      </Group>
-    </div>
+      ) : (
+        <Stack gap="xs">
+          {day.orders.map((order) => (
+            <OrderCard key={order.id} order={order} actionDate={actionDate} />
+          ))}
+        </Stack>
+      )}
+      {creating && <OrderEditor order={null} defaultDate={day.date} onClose={() => setCreating(false)} />}
+    </Section>
   );
 }
 
@@ -201,10 +263,17 @@ function costTooltip(cost: Cost) {
   return parts.join(' · ');
 }
 
-function OrderBadge({ number }: { number: number | null }) {
+function OrderBadge({ number, shop }: { number: number | null; shop?: boolean }) {
   if (number === null) return null;
+  if (shop) {
+    return (
+      <Badge size="md" variant="light" color="grape" component={Link} to="/orders" style={{ cursor: 'pointer', flexShrink: 0 }}>
+        Магазин №{number}
+      </Badge>
+    );
+  }
   return (
-    <Badge size="sm" variant="light" color="blue" component={Link} to="/orders" style={{ cursor: 'pointer', flexShrink: 0 }}>
+    <Badge size="md" variant="light" color="blue" component={Link} to="/orders" style={{ cursor: 'pointer', flexShrink: 0 }}>
       Заказ №{number}
     </Badge>
   );
@@ -223,9 +292,24 @@ function BatchesTable({
   const update = useAction(api.batches.update);
   const remove = useAction(api.batches.remove);
   const recalculate = useAction(api.batches.recalculateCost, 'Себестоимость пересчитана по текущим ценам');
+  const carry = useCarryActions(day.date);
 
   const rows = day.batches;
   const sum = (pick: (b: DayBatch) => number) => rows.reduce((total, b) => total + pick(b), 0);
+
+  // Сервер отдаёт строки по изделиям: сначала витрина, затем заказы.
+  // Заказные партии одного изделия складываются в одну строку.
+  type DisplayRow = { kind: 'free'; batch: DayBatch } | { kind: 'orders'; batches: DayBatch[] };
+  const display: DisplayRow[] = [];
+  for (const batch of rows) {
+    if (batch.orderId === null) {
+      display.push({ kind: 'free', batch });
+      continue;
+    }
+    const last = display[display.length - 1];
+    if (last?.kind === 'orders' && last.batches[0].productId === batch.productId) last.batches.push(batch);
+    else display.push({ kind: 'orders', batches: [batch] });
+  }
 
   const removeBatch = async (batch: DayBatch) => {
     const ok = await confirm({
@@ -242,10 +326,18 @@ function BatchesTable({
       <Table verticalSpacing={6} horizontalSpacing="xs" highlightOnHover>
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Изделие</Table.Th>
+            <Table.Th className="name-cell">Изделие</Table.Th>
             <Table.Th className="num">Кол‑во</Table.Th>
-            <Table.Th className="num">С/с за шт</Table.Th>
-            <Table.Th className="num">Цена за шт</Table.Th>
+            <Table.Th className="num" style={{ whiteSpace: 'nowrap' }}>
+              С/с
+              <br />
+              за шт
+            </Table.Th>
+            <Table.Th className="num" style={{ whiteSpace: 'nowrap' }}>
+              Цена
+              <br />
+              за шт
+            </Table.Th>
             <Table.Th className="num">Продано</Table.Th>
             <Table.Th className="num">Списано</Table.Th>
             <Table.Th className="num">Остаток</Table.Th>
@@ -257,8 +349,11 @@ function BatchesTable({
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
-          {rows.map((batch) => {
-            const locked = batch.orderId !== null;
+          {display.map((row) => {
+            if (row.kind === 'orders') return <OrdersRow key={`orders-${row.batches[0].id}`} batches={row.batches} />;
+
+            const batch = row.batch;
+            const locked = false;
             const later = [
               batch.soldLater > 0 ? `продано ${quantity(batch.soldLater)}` : null,
               batch.writtenOffLater > 0 ? `списано ${quantity(batch.writtenOffLater)}` : null,
@@ -271,8 +366,13 @@ function BatchesTable({
                     <Text fw={500} size="sm">
                       {batch.productName}
                     </Text>
-                    <OrderBadge number={batch.orderNumber} />
+                    <OrderBadge number={batch.orderNumber} shop={batch.orderIsConsignment} />
                   </Group>
+                  {batch.orderReturned > 0 && (
+                    <Text size="xs" c="grape.7">
+                      Магазин вернул {quantity(batch.orderReturned)}
+                    </Text>
+                  )}
                   {later.length > 0 && (
                     <Text size="xs" c="dimmed">
                       Позже: {later.join(', ')}
@@ -317,9 +417,7 @@ function BatchesTable({
                   </Cell>
                 </Table.Td>
                 <Table.Td className="num">
-                  <Text span inherit fw={batch.remaining > 0 ? 600 : undefined} c={batch.remaining > 0 ? 'orange.8' : 'dimmed'}>
-                    {quantity(batch.remaining)}
-                  </Text>
+                  <RemainingCell remaining={batch.remaining} carriedUntil={batch.carriedUntil} />
                 </Table.Td>
                 <Table.Td className="num">
                   <Tooltip
@@ -352,6 +450,7 @@ function BatchesTable({
                         <Menu.Item leftSection={<IconTrashX size={16} />} onClick={() => onWriteOff(batch)}>
                           Списать с причиной
                         </Menu.Item>
+                        <CarryMenuItems batch={batch} actions={carry} />
                         <Menu.Item leftSection={<IconRefresh size={16} />} onClick={() => recalculate.mutate(batch.id)}>
                           Пересчитать себестоимость
                         </Menu.Item>
@@ -385,6 +484,102 @@ function BatchesTable({
         </Table.Tbody>
       </Table>
     </div>
+  );
+}
+
+/**
+ * Одна строка на изделие из всех заказов дня: количества и суммы сложены,
+ * метки показывают, из каких заказов она состоит. Меняется через сами заказы.
+ */
+function OrdersRow({ batches }: { batches: DayBatch[] }) {
+  const total = (pick: (b: DayBatch) => number) => batches.reduce((sum, b) => sum + pick(b), 0);
+  const amount = total((b) => b.quantity);
+  const same = (pick: (b: DayBatch) => number) => batches.every((b) => pick(b) === pick(batches[0]));
+  const label = (b: DayBatch) => `${b.orderIsConsignment ? 'Магазин' : 'Заказ'} №${b.orderNumber}`;
+
+  const returned = total((b) => b.orderReturned);
+  const later = [
+    total((b) => b.soldLater) > 0 ? `продано ${quantity(total((b) => b.soldLater))}` : null,
+    total((b) => b.writtenOffLater) > 0 ? `списано ${quantity(total((b) => b.writtenOffLater))}` : null,
+  ].filter(Boolean);
+  const remaining = total((b) => b.remaining);
+
+  return (
+    <Table.Tr className="orders-row">
+      <Table.Td className="name-cell">
+        <Group gap={6} wrap="nowrap">
+          <Text fw={500} size="sm">
+            {batches[0].productName}
+          </Text>
+          <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+            в заказах
+          </Text>
+        </Group>
+        <Group gap={4} mt={3} wrap="wrap">
+          {batches.map((b) => (
+            <Tooltip key={b.id} label={b.fromStock ? 'Взято из готового' : 'Приготовлено под заказ'}>
+              <Badge
+                size="md"
+                variant="light"
+                color={b.orderIsConsignment ? 'grape' : 'blue'}
+                component={Link}
+                to="/orders"
+                style={{ cursor: 'pointer' }}
+              >
+                {label(b)} · {quantity(b.quantity)}
+              </Badge>
+            </Tooltip>
+          ))}
+        </Group>
+        {returned > 0 && (
+          <Text size="xs" c="grape.7">
+            Магазин вернул {quantity(returned)}
+          </Text>
+        )}
+        {later.length > 0 && (
+          <Text size="xs" c="dimmed">
+            Позже: {later.join(', ')}
+          </Text>
+        )}
+      </Table.Td>
+      <Table.Td className="num">
+        <Text span inherit fw={600}>
+          {quantity(amount)}
+        </Text>
+      </Table.Td>
+      <Table.Td className="num">
+        {same((b) => b.unitCost) ? (
+          <Tooltip label={costTooltip(batches[0].unitCostBreakdown)}>
+            <span>{money(batches[0].unitCost)}</span>
+          </Tooltip>
+        ) : (
+          <Tooltip label={batches.map((b) => `${label(b)}: ${money(b.unitCost)}`).join(' · ')}>
+            <span>≈ {money(total((b) => b.totalCost) / amount)}</span>
+          </Tooltip>
+        )}
+      </Table.Td>
+      <Table.Td className="num">
+        {same((b) => b.unitPrice) ? (
+          money(batches[0].unitPrice)
+        ) : (
+          <Tooltip label={batches.map((b) => `${label(b)}: ${money(b.unitPrice)}`).join(' · ')}>
+            <span>≈ {money(total((b) => b.unitPrice * b.quantity) / amount)}</span>
+          </Tooltip>
+        )}
+      </Table.Td>
+      <Table.Td className="num">{quantity(total((b) => b.sold))}</Table.Td>
+      <Table.Td className="num">{quantity(total((b) => b.writtenOff))}</Table.Td>
+      <Table.Td className="num">
+        <RemainingCell remaining={remaining} carriedUntil={batches.find((b) => b.carriedUntil)?.carriedUntil ?? null} />
+      </Table.Td>
+      <Table.Td className="num">{money(total((b) => b.totalCost))}</Table.Td>
+      <Table.Td className="num">{money(total((b) => b.potentialRevenue))}</Table.Td>
+      <Table.Td className="num">
+        <Profit value={total((b) => b.potentialProfit)} />
+      </Table.Td>
+      <Table.Td className="num">{money(total((b) => b.actualRevenue))}</Table.Td>
+      <Table.Td />
+    </Table.Tr>
   );
 }
 
@@ -541,7 +736,7 @@ function AddBatchForm({ date, isFirst }: { date: string; isFirst: boolean }) {
   );
 }
 
-// ---------- Остатки прошлых дней ----------
+// ---------- Перенесено с прошлых дней ----------
 
 function CarryOverTable({
   day,
@@ -553,6 +748,7 @@ function CarryOverTable({
   onWriteOff: (target: BatchTarget) => void;
 }) {
   const setWriteOff = useAction(api.batches.setWriteOff);
+  const carry = useCarryActions(day.date);
   const rows = day.carryOver;
   const sum = (pick: (b: DayCarryOver) => number) => rows.reduce((total, b) => total + pick(b), 0);
 
@@ -561,10 +757,18 @@ function CarryOverTable({
       <Table verticalSpacing={6} horizontalSpacing="xs" highlightOnHover>
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Изделие</Table.Th>
+            <Table.Th className="name-cell">Изделие</Table.Th>
             <Table.Th>Приготовлено</Table.Th>
-            <Table.Th className="num">С/с за шт</Table.Th>
-            <Table.Th className="num">Цена за шт</Table.Th>
+            <Table.Th className="num" style={{ whiteSpace: 'nowrap' }}>
+              С/с
+              <br />
+              за шт
+            </Table.Th>
+            <Table.Th className="num" style={{ whiteSpace: 'nowrap' }}>
+              Цена
+              <br />
+              за шт
+            </Table.Th>
             <Table.Th className="num">Было утром</Table.Th>
             <Table.Th className="num">Продано сегодня</Table.Th>
             <Table.Th className="num">Списано сегодня</Table.Th>
@@ -575,7 +779,7 @@ function CarryOverTable({
         </Table.Thead>
         <Table.Tbody>
           {rows.map((batch) => {
-            const locked = batch.orderId !== null;
+            const locked = batch.orderSaleLocked;
             return (
               <Table.Tr key={batch.id}>
                 <Table.Td className="name-cell">
@@ -583,7 +787,7 @@ function CarryOverTable({
                     <Text fw={500} size="sm">
                       {batch.productName}
                     </Text>
-                    <OrderBadge number={batch.orderNumber} />
+                    <OrderBadge number={batch.orderNumber} shop={batch.orderIsConsignment} />
                   </Group>
                 </Table.Td>
                 <Table.Td>
@@ -605,9 +809,7 @@ function CarryOverTable({
                   </Cell>
                 </Table.Td>
                 <Table.Td className="num">
-                  <Text span inherit fw={batch.remaining > 0 ? 600 : undefined} c={batch.remaining > 0 ? 'orange.8' : 'dimmed'}>
-                    {quantity(batch.remaining)}
-                  </Text>
+                  <RemainingCell remaining={batch.remaining} carriedUntil={batch.carriedUntil} />
                 </Table.Td>
                 <Table.Td className="num">{money(batch.revenue)}</Table.Td>
                 <Table.Td>
@@ -625,6 +827,7 @@ function CarryOverTable({
                         <Menu.Item leftSection={<IconTrashX size={16} />} onClick={() => onWriteOff(batch)}>
                           Списать с причиной
                         </Menu.Item>
+                        <CarryMenuItems batch={batch} actions={carry} />
                         {batch.remaining > 0 && (
                           <Menu.Item
                             color="red"
@@ -659,6 +862,242 @@ function CarryOverTable({
         </Table.Tbody>
       </Table>
     </div>
+  );
+}
+
+// ---------- Перенос остатков ----------
+
+/** Остаток в таблице и, если его перенесли дальше, до какого дня. */
+function RemainingCell({ remaining, carriedUntil }: { remaining: number; carriedUntil: string | null }) {
+  return (
+    <>
+      <Text span inherit fw={remaining > 0 ? 600 : undefined} c={remaining > 0 ? 'orange.8' : 'dimmed'}>
+        {quantity(remaining)}
+      </Text>
+      {carriedUntil && (
+        <Tooltip label={`Остаток перенесён: его можно продать до ${longDate(carriedUntil)}`}>
+          <Text size="xs" c="blue.7" style={{ whiteSpace: 'nowrap' }}>
+            → {dayMonth(carriedUntil)}
+          </Text>
+        </Tooltip>
+      )}
+    </>
+  );
+}
+
+function useCarryActions(date: string) {
+  const carry = useAction(api.batches.carry, 'Остаток перенесён на следующий день');
+  const cancel = useAction(api.batches.cancelCarry, 'Перенос отменён');
+  return {
+    carryTomorrow: (id: string) => carry.mutate({ batchIds: [id], toDate: addDays(date, 1) }),
+    cancel: (id: string) => cancel.mutate({ id, lastDay: date }),
+  };
+}
+
+function CarryMenuItems({
+  batch,
+  actions,
+}: {
+  batch: { id: string; canCarry: boolean; carriedUntil: string | null; remaining: number };
+  actions: ReturnType<typeof useCarryActions>;
+}) {
+  return (
+    <>
+      {batch.canCarry && (
+        <Menu.Item leftSection={<IconArrowForwardUp size={16} />} onClick={() => actions.carryTomorrow(batch.id)}>
+          Перенести остаток на завтра ({quantity(batch.remaining)})
+        </Menu.Item>
+      )}
+      {batch.carriedUntil && (
+        <Menu.Item leftSection={<IconArrowBackUp size={16} />} onClick={() => actions.cancel(batch.id)}>
+          Отменить перенос
+        </Menu.Item>
+      )}
+    </>
+  );
+}
+
+/** Что из этого дня можно перенести: непроданное, которое ещё не перенесли. */
+function carryCandidates(day: Day) {
+  return [
+    ...day.batches.filter((b) => b.canCarry).map((b) => ({ ...b, fromDay: day.date })),
+    ...day.carryOver.filter((b) => b.canCarry).map((b) => ({ ...b, fromDay: b.productionDate })),
+  ];
+}
+
+function CarryButton({ day, onOpen }: { day: Day; onOpen: () => void }) {
+  const candidates = carryCandidates(day);
+  const carried = [...day.batches, ...day.carryOver].filter((b) => b.carriedUntil !== null);
+  if (candidates.length === 0) {
+    if (carried.length === 0) return null;
+    return (
+      <Text size="sm" c="blue.7">
+        Остаток перенесён на {longDate(carried[0].carriedUntil!)}
+      </Text>
+    );
+  }
+  const total = candidates.reduce((sum, b) => sum + b.remaining, 0);
+  return (
+    <Button variant="light" size="compact-sm" leftSection={<IconArrowForwardUp size={14} />} onClick={onOpen}>
+      Остатки на завтра · {quantity(total)} шт
+    </Button>
+  );
+}
+
+/** Напоминание о непроданном за прошлые дни, которое не перенесли и не списали. */
+function PendingLeftovers({ day, onOpen }: { day: Day; onOpen: () => void }) {
+  const total = day.leftovers.reduce((sum, l) => sum + l.remaining, 0);
+  return (
+    <Paper withBorder radius="md" p="sm" bg="yellow.0" style={{ borderColor: 'var(--mantine-color-yellow-3)' }}>
+      <Group justify="space-between" wrap="wrap" gap="sm">
+        <div style={{ minWidth: 0 }}>
+          <Text size="sm" fw={600}>
+            Непроданное с прошлых дней: {quantity(total)} шт
+          </Text>
+          <Text size="sm" c="dimmed">
+            {day.leftovers
+              .map((l) => `${l.productName} ${quantity(l.remaining)} шт (${dayMonth(l.lastDay)})`)
+              .join(' · ')}
+          </Text>
+          <Text size="xs" c="dimmed">
+            Само сюда оно не переходит, убыток посчитан в дне приготовления. Перенесите, если будете продавать, или
+            спишите.
+          </Text>
+        </div>
+        <Button size="compact-md" variant="light" color="yellow.9" onClick={onOpen}>
+          Перенести или списать
+        </Button>
+      </Group>
+    </Paper>
+  );
+}
+
+/**
+ * Решение по остаткам: перенести на другой день или списать как непроданное.
+ * «outgoing» — остаток этого дня, по умолчанию на завтра; «incoming» — забытое с прошлых дней, сюда.
+ */
+function LeftoversModal({ day, mode, onClose }: { day: Day; mode: 'outgoing' | 'incoming'; onClose: () => void }) {
+  const carry = useAction(api.batches.carry, 'Остаток перенесён');
+  const writeOff = useAction(api.batches.writeOffLeftovers, 'Остаток списан');
+
+  const rows =
+    mode === 'outgoing'
+      ? carryCandidates(day).map((b) => ({
+          id: b.id,
+          name: b.productName,
+          remaining: b.remaining,
+          amount: b.remaining * b.unitPrice,
+          from: b.fromDay,
+        }))
+      : day.leftovers.map((l) => ({
+          id: l.batchId,
+          name: l.orderNumber !== null ? `${l.productName} (возврат, ${l.orderIsConsignment ? 'магазин' : 'заказ'} №${l.orderNumber})` : l.productName,
+          remaining: l.remaining,
+          amount: l.remaining * l.unitPrice,
+          from: l.lastDay,
+        }));
+
+  const [selected, setSelected] = useState<string[]>(rows.map((r) => r.id));
+  const [toDate, setToDate] = useState<string>(mode === 'outgoing' ? addDays(day.date, 1) : day.date);
+  const chosen = rows.filter((r) => selected.includes(r.id));
+  const busy = carry.isPending || writeOff.isPending;
+
+  const doCarry = async () => {
+    await carry.mutateAsync({ batchIds: chosen.map((r) => r.id), toDate });
+    onClose();
+  };
+  const doWriteOff = async () => {
+    await writeOff.mutateAsync({ batchIds: chosen.map((r) => r.id), reason: 'Не продано' });
+    onClose();
+  };
+
+  return (
+    <Modal
+      opened
+      onClose={onClose}
+      title={mode === 'outgoing' ? `Непроданное за ${longDate(day.date)}` : 'Непроданное с прошлых дней'}
+      centered
+      size={640}
+    >
+      <Stack gap="sm">
+        <Text size="sm" c="dimmed">
+          {mode === 'outgoing'
+            ? 'Без переноса остаток в следующих днях не появится. Его себестоимость уже в затратах этого дня, поэтому перенос прибыль этого дня не меняет: выручка с перенесённого запишется в день продажи.'
+            : `Эти изделия не продали и не перенесли. Перенесите на ${longDate(day.date)} то, что ещё можно продать, остальное спишите. Убыток от них уже посчитан в дне приготовления.`}
+        </Text>
+        <Stack gap={6}>
+          {rows.map((row) => (
+            <Checkbox
+              key={row.id}
+              checked={selected.includes(row.id)}
+              onChange={(event) =>
+                setSelected(event.currentTarget.checked ? [...selected, row.id] : selected.filter((id) => id !== row.id))
+              }
+              label={
+                <Text size="sm">
+                  {row.name} — <b>{quantity(row.remaining)} шт</b>{' '}
+                  <Text span size="xs" c="dimmed">
+                    на {money(row.amount)}
+                    {row.from !== day.date && `, ${dayMonth(row.from)}`}
+                  </Text>
+                </Text>
+              }
+            />
+          ))}
+        </Stack>
+        {mode === 'outgoing' && (
+          <DatePickerInput
+            label="Перенести на"
+            value={toDate}
+            minDate={addDays(day.date, 1)}
+            onChange={(value) => value && setToDate(value)}
+            valueFormat="D MMMM YYYY, dd"
+            w={240}
+          />
+        )}
+        <Group justify="space-between" gap="sm" mt="xs">
+          <Button variant="subtle" color="red" onClick={() => void doWriteOff().catch(() => undefined)} disabled={chosen.length === 0 || busy} loading={writeOff.isPending}>
+            Списать отмеченное
+          </Button>
+          <Group gap="sm">
+            <Button variant="default" onClick={onClose}>
+              Отмена
+            </Button>
+            <Button
+              leftSection={<IconArrowForwardUp size={16} />}
+              onClick={() => void doCarry().catch(() => undefined)}
+              disabled={chosen.length === 0 || busy}
+              loading={carry.isPending}
+            >
+              {mode === 'outgoing' ? `Перенести на ${longDate(toDate)}` : 'Перенести сюда'}
+            </Button>
+          </Group>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}
+
+// ---------- Выдача и доставка ----------
+
+/** Заказы, приготовленные раньше: в день выдачи — только короткие строки внизу. */
+function Deliveries({ day, actionDate }: { day: Day; actionDate: string }) {
+  const left = day.deliveries.filter((o) => o.status !== 'Delivered').length;
+  return (
+    <Section
+      title="Выдача и доставка"
+      aside={
+        <Text size="sm" c="dimmed">
+          {left > 0 ? `осталось выдать: ${left}` : 'всё выдано'} · затраты и прибыль — в дне приготовления
+        </Text>
+      }
+    >
+      <Stack gap={0}>
+        {day.deliveries.map((order) => (
+          <DeliveryRow key={order.id} order={order} actionDate={actionDate} />
+        ))}
+      </Stack>
+    </Section>
   );
 }
 
@@ -737,50 +1176,6 @@ function ExpensesSection({ day, currency }: { day: Day; currency: string }) {
           </Button>
         </Group>
       </form>
-    </Section>
-  );
-}
-
-// ---------- Заказы на этот день ----------
-
-function OrdersSection({ day }: { day: Day }) {
-  return (
-    <Section
-      title="Заказы на этот день"
-      aside={
-        <Anchor component={Link} to="/orders" size="sm">
-          Все заказы
-        </Anchor>
-      }
-    >
-      {day.orders.length === 0 ? (
-        <Text size="sm" c="dimmed">
-          На этот день заказов нет.
-        </Text>
-      ) : (
-        <Stack gap="xs">
-          {day.orders.map((order) => (
-            <Group key={order.id} justify="space-between" wrap="nowrap" align="flex-start">
-              <div>
-                <Text size="sm" fw={500}>
-                  №{order.number} · {order.customerName}
-                  {order.dueTime && ` · к ${shortTime(order.dueTime)}`}
-                </Text>
-                <Text size="sm" c="dimmed">
-                  {order.itemsSummary}
-                </Text>
-                <Text size="xs" c="dimmed">
-                  Сумма {money(order.total)}
-                  {order.balance > 0 && `, осталось оплатить ${money(order.balance)}`}
-                </Text>
-              </div>
-              <Badge color={orderStatusColor[order.status]} variant="light">
-                {orderStatusLabel[order.status]}
-              </Badge>
-            </Group>
-          ))}
-        </Stack>
-      )}
     </Section>
   );
 }
